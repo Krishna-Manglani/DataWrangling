@@ -2,3 +2,4 @@ Krishna: Hi everyone, I'm Krishna Manglani. I'm currently pursuing a Master of A
 Sherwin: Hi everyone, I'm Sherwin Louise Grijaldo. I am an undergrad studying Data Science at the University of Canterbury. I am passionate in improving my coding and reporting skills since these are my weakness. I'm looking forward to working and learning with the team and contributing to this project.
 Sherwin (Sherwin-Test): This change was made from my own branch
 Carl: Hi everyone, I'm Carl Alvin Dejucos, currently studying as undergraduate at University of Canterbury on a bachelor of Data Science, major in Business Analytics. I wanna excel my social skills especially in a business world. In addition, I wanna improve my knowledge, reporting and creativity when it comes to visualisations and data analytics, nice to meet you all and looking forward to work with you guys.
+Carl (Carl-Test): This change was made from my own branch

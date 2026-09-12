@@ -70,7 +70,7 @@ Each row represents one Airbnb listing.
 | `price` | Nightly listing price. |
 | `minimum_nights` | Minimum booking duration. |
 | `maximum_nights` | Maximum booking duration. |
-| `availability_30` | Available days in the next 30 days. |
+| `availability_30` | Available days in the ne  xt 30 days. |
 | `availability_60` | Available days in the next 60 days. |
 | `availability_90` | Available days in the next 90 days. |
 | `availability_365` | Available days in the next year. |

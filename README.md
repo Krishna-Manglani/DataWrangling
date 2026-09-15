@@ -105,8 +105,9 @@ Each row represents one Airbnb listing.
 
 The Christchurch Airbnb dataset created in Deliverable 3 was cleaned to improve data quality and prepare it for later analysis and comparison with the Tenancy Services dataset.
 
-**Original dataset:** 28,795 rows × 21 columns  
-**Cleaned dataset:** 28,795 rows × 19 columns
+**Original dataset:** 28,795 rows × 21 columns
+
+**Cleaned dataset:** 28,795 rows × 20 columns
 
 ### Cleaning Decisions
 
@@ -122,6 +123,7 @@ The Christchurch Airbnb dataset created in Deliverable 3 was cleaned to improve 
 | Checked listing-month duplicates | A listing may appear across different months, but should not normally appear more than once within the same month. | 0 duplicate `id`, `year`, `month` combinations found |
 | Retained legitimate missing values | Removing all incomplete records could cause unnecessary data loss. | No rows removed |
 | Checked `price` | Prices were checked for zero, negative, and unusually high values. | 0 invalid prices; 153 prices above $1,000 identified and retained |
+| Added `price_review_flag` | Allows unusually high prices to be identified for review without automatically removing potentially valid listings. | 1 new column added; 153 observations flagged |
 | Checked `availability_365` | Values should be between 0 and 365 days. | 0 invalid values |
 | Checked `minimum_nights` | Non-missing values should be greater than zero. | 0 invalid values |
 
@@ -151,6 +153,8 @@ The `price` column was checked for unusually high values.
 
 These observations were retained rather than automatically removed because a high Airbnb price does not necessarily indicate an error and may represent a genuine listing.
 
+A `price_review_flag` column was added to identify these observations for review without deleting or changing the original price values.
+
 ---
 
 ### Cleaning Summary
@@ -158,16 +162,21 @@ These observations were retained rather than automatically removed because a hig
 | Measure | Before | After |
 |---|---:|---:|
 | Rows | 28,795 | 28,795 |
-| Columns | 21 | 19 |
+| Columns | 21 | 20 |
 | Exact duplicates | 0 | 0 |
 
 **Columns removed:**
 - `license`
 - `neighbourhood_group`
 
+**Column added:**
+- `price_review_flag`
+
 **Rows removed:** 0
 
-The cleaning process intentionally preserved valid observations while removing redundant or unusable columns.
+The final cleaned dataset contains 20 columns: 19 retained original columns and 1 new `price_review_flag` column.
+
+The cleaning process intentionally preserved valid observations while removing redundant or unusable columns and flagging unusual prices for review.
 
 ---
 
@@ -180,7 +189,6 @@ The cleaning process intentionally preserved valid observations while removing r
 | `listings_cleaning_log.csv` | Record of cleaning decisions, reasons, and consequences |
 
 The cleaned dataset and cleaning log are saved locally in the `listings_data` directory.
-
 
 
 -----------------------------------------------------------------------------------------------

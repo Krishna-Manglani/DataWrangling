@@ -30,6 +30,13 @@ import pandas as pd
 # Config
 # ---------------------------------------------------------------------------
 
+# PRESENTATION GUIDE:
+# These paths tell the script where the Deliverable 3 dataset is located
+# and where the cleaned dataset and cleaning log should be saved.
+#
+# We save the cleaned data separately so the original Deliverable 3
+# dataset is not overwritten.
+
 DATA_FILE = Path(
     "listings_data/listings_christchurch_oct25_jun26.csv"
 )
@@ -47,8 +54,19 @@ CLEANING_LOG_FILE = Path(
 # Columns to keep
 # ---------------------------------------------------------------------------
 
-# These columns are useful for the current Airbnb analysis
-# and the later comparison with the Tenancy Services dataset.
+# PRESENTATION GUIDE:
+# The Deliverable 3 dataset originally contains 21 columns.
+#
+# We reviewed the columns and decided to retain these 19 because
+# they may still be useful for the Airbnb analysis or later comparison
+# with the Tenancy Services dataset.
+#
+# Important examples:
+# - id identifies individual Airbnb listings.
+# - latitude and longitude are kept for geographic analysis.
+# - price is needed for Airbnb price analysis.
+# - availability_365 measures yearly listing availability.
+# - year, month and month_year identify the monthly snapshots.
 
 COLUMNS_TO_KEEP = [
     "id",
@@ -77,12 +95,19 @@ COLUMNS_TO_KEEP = [
 # Columns to drop
 # ---------------------------------------------------------------------------
 
+# PRESENTATION GUIDE:
+# We only remove columns when there is a clear reason.
+#
 # license:
-#   All values are missing, so the column provides no useful information.
+# All values are missing, so this column provides no usable information.
 #
 # neighbourhood_group:
-#   Every row contains "Christchurch City" because Deliverable 3 already
-#   filtered the dataset to Christchurch. The column is therefore redundant.
+# Every row contains "Christchurch City".
+# Since Deliverable 3 already filtered the dataset to Christchurch,
+# this column is redundant.
+#
+# Therefore:
+# 21 original columns - 2 removed = 19 retained original columns.
 
 COLUMNS_TO_DROP = [
     "license",
@@ -94,9 +119,14 @@ COLUMNS_TO_DROP = [
 # Other cleaning settings
 # ---------------------------------------------------------------------------
 
-# Prices above this value are flagged for review.
-# They are NOT automatically removed because a high Airbnb price
-# may still represent a genuine listing.
+# PRESENTATION GUIDE:
+# Prices above NZD $1,000 are considered unusual enough to review.
+#
+# We DO NOT automatically remove them because a high Airbnb price
+# could still represent a genuine listing.
+#
+# Instead, the code creates a flag so these observations can be
+# identified and investigated later.
 
 PRICE_REVIEW_THRESHOLD = 1000
 
@@ -104,6 +134,17 @@ PRICE_REVIEW_THRESHOLD = 1000
 # ---------------------------------------------------------------------------
 # Cleaning log
 # ---------------------------------------------------------------------------
+
+# PRESENTATION GUIDE:
+# We create a cleaning log so that every important cleaning decision
+# is documented.
+#
+# The log records:
+# - what we did,
+# - why we did it,
+# - and what effect it had.
+#
+# This makes our cleaning process transparent and reproducible.
 
 def add_log(
     log_rows: list,
@@ -138,6 +179,13 @@ def add_log(
 # Load data
 # ---------------------------------------------------------------------------
 
+# PRESENTATION GUIDE:
+# We start by loading the combined Christchurch Airbnb dataset that
+# was produced in Deliverable 3.
+#
+# We do not manually edit the CSV because using code makes the
+# cleaning process reproducible.
+
 def load_data(filepath: Path) -> pd.DataFrame:
     """
     Load the combined Christchurch Airbnb dataset from Deliverable 3.
@@ -162,6 +210,13 @@ def load_data(filepath: Path) -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 # Check expected columns
 # ---------------------------------------------------------------------------
+
+# PRESENTATION GUIDE:
+# Before cleaning, we confirm that all 21 expected original columns
+# are actually present.
+#
+# This is a safety check. If the dataset structure changes, the script
+# stops instead of silently performing the wrong cleaning process.
 
 def check_expected_columns(df: pd.DataFrame) -> None:
     """
@@ -191,6 +246,15 @@ def check_expected_columns(df: pd.DataFrame) -> None:
 # ---------------------------------------------------------------------------
 # Select useful columns
 # ---------------------------------------------------------------------------
+
+# PRESENTATION GUIDE:
+# We remove only license and neighbourhood_group.
+#
+# We do NOT remove a column just because it contains some missing values.
+# The other 19 columns still contain potentially useful information.
+#
+# Latitude and longitude are specifically retained for geographic
+# analysis and later comparison.
 
 def select_columns(
     df: pd.DataFrame,
@@ -244,6 +308,19 @@ def select_columns(
 # ---------------------------------------------------------------------------
 # Standardise text and date fields
 # ---------------------------------------------------------------------------
+
+# PRESENTATION GUIDE:
+# We standardise selected text columns by removing leading and trailing
+# spaces so that categories are represented consistently.
+#
+# For example:
+# "Private room " and "Private room"
+# should not accidentally be treated as different categories.
+#
+# We also convert last_review to a proper date format so it can be
+# analysed consistently later.
+#
+# Invalid dates are changed to missing values rather than guessed.
 
 def standardise_fields(
     df: pd.DataFrame,
@@ -322,6 +399,20 @@ def standardise_fields(
 # ---------------------------------------------------------------------------
 # Check duplicates
 # ---------------------------------------------------------------------------
+
+# PRESENTATION GUIDE:
+# We perform two types of duplicate checking.
+#
+# First, we check for completely identical rows.
+# Exact duplicate rows provide no additional information.
+#
+# Second, we check id + year + month.
+#
+# The same Airbnb listing can legitimately appear in multiple months,
+# because our dataset contains monthly snapshots.
+#
+# However, the same listing should not normally appear more than once
+# within the same year and month.
 
 def check_duplicates(
     df: pd.DataFrame,
@@ -405,6 +496,21 @@ def check_duplicates(
 # Check missing values
 # ---------------------------------------------------------------------------
 
+# PRESENTATION GUIDE:
+# We check missing values but do not automatically remove or impute them.
+#
+# Why?
+# An incomplete record can still contain useful information.
+#
+# Examples:
+# - A listing with missing price may still be useful for counting listings.
+# - Missing review information may be legitimate for a listing with
+#   no reviews.
+# - Missing minimum_nights should not be guessed.
+#
+# Automatically deleting incomplete records could cause unnecessary
+# data loss, while imputing could introduce values that were never observed.
+
 def check_missing_values(
     df: pd.DataFrame,
     log_rows: list,
@@ -467,6 +573,24 @@ def check_missing_values(
 # Validate numeric fields
 # ---------------------------------------------------------------------------
 
+# PRESENTATION GUIDE:
+# We validate important numeric columns using logical rules based
+# on what each variable represents.
+#
+# price:
+# Non-missing prices should be greater than zero.
+#
+# availability_365:
+# This represents the number of days available during one year,
+# so it must be between 0 and 365.
+#
+# minimum_nights:
+# A non-missing minimum stay should be greater than zero.
+#
+# latitude and longitude:
+# We check that coordinates are available because they are important
+# for geographic analysis.
+
 def validate_numeric_fields(
     df: pd.DataFrame,
     log_rows: list,
@@ -485,24 +609,28 @@ def validate_numeric_fields(
     """
     cleaned = df.copy()
 
+    # Check for zero or negative non-missing prices.
     invalid_price = (
         cleaned["price"].notna()
         &
         (cleaned["price"] <= 0)
     ).sum()
 
+    # Check whether availability is outside the logical 0-365 range.
     invalid_availability = (
         (cleaned["availability_365"] < 0)
         |
         (cleaned["availability_365"] > 365)
     ).sum()
 
+    # Check for zero or negative minimum-night requirements.
     invalid_minimum_nights = (
         cleaned["minimum_nights"].notna()
         &
         (cleaned["minimum_nights"] <= 0)
     ).sum()
 
+    # Check whether any listings are missing geographic coordinates.
     missing_coordinates = (
         cleaned["latitude"].isna()
         |
@@ -528,8 +656,30 @@ def validate_numeric_fields(
         ),
     )
 
-    # Flag unusually high prices.
-    # Do not delete them automatically because they may be genuine.
+    # -----------------------------------------------------------------------
+    # Flag unusually high prices
+    # -----------------------------------------------------------------------
+
+    # PRESENTATION GUIDE:
+    # We found some unusually high Airbnb prices.
+    #
+    # Instead of automatically deleting them, we create
+    # price_review_flag.
+    #
+    # True  = price is above NZD $1,000.
+    # False = price was not flagged.
+    #
+    # Our result:
+    # 153 observations were flagged.
+    #
+    # We retain these observations because a high Airbnb price could
+    # still represent a genuine listing.
+    #
+    # This adds ONE new column to the dataset.
+    #
+    # Therefore:
+    # 19 retained original columns + 1 price_review_flag
+    # = 20 final columns.
 
     cleaned["price_review_flag"] = (
         cleaned["price"].notna()
@@ -569,6 +719,18 @@ def validate_numeric_fields(
 # ---------------------------------------------------------------------------
 # Final sanity checks
 # ---------------------------------------------------------------------------
+
+# PRESENTATION GUIDE:
+# Before saving the dataset, we perform final quality-control checks.
+#
+# We confirm:
+# - latitude and longitude are still present.
+# - coordinates do not contain missing values.
+# - availability_365 remains between 0 and 365.
+# - no exact duplicates remain.
+#
+# This helps make sure our cleaning process did not accidentally
+# introduce new data-quality problems.
 
 def run_sanity_checks(
     df: pd.DataFrame,
@@ -636,6 +798,18 @@ def run_sanity_checks(
 # Save outputs
 # ---------------------------------------------------------------------------
 
+# PRESENTATION GUIDE:
+# We save two outputs.
+#
+# 1. listings_christchurch_cleaned.csv
+#    This is our final cleaned Airbnb dataset.
+#
+# 2. listings_cleaning_log.csv
+#    This records our cleaning decisions, reasons and consequences.
+#
+# We save the cleaned dataset separately instead of overwriting the
+# Deliverable 3 dataset. This keeps the process reproducible.
+
 def save_outputs(
     df: pd.DataFrame,
     log_rows: list,
@@ -693,7 +867,12 @@ def main():
 
     log_rows = []
 
-    # Step 1: Load Deliverable 3 dataset.
+    # -----------------------------------------------------------------------
+    # Step 1: Load Deliverable 3 dataset
+    # -----------------------------------------------------------------------
+    # PRESENTATION GUIDE:
+    # "We start with the Christchurch Airbnb dataset produced in
+    # Deliverable 3. It contains 28,795 rows and 21 columns."
 
     df = load_data(
         DATA_FILE
@@ -708,13 +887,20 @@ def main():
         f"{original_columns} columns"
     )
 
-    # Check that all 21 expected original columns exist.
+    # PRESENTATION GUIDE:
+    # "Before cleaning, we confirm that all 21 expected columns exist."
 
     check_expected_columns(
         df
     )
 
-    # Step 2: Keep useful columns and remove unnecessary columns.
+    # -----------------------------------------------------------------------
+    # Step 2: Select columns
+    # -----------------------------------------------------------------------
+    # PRESENTATION GUIDE:
+    # "We remove license because it is completely missing and
+    # neighbourhood_group because it only contains Christchurch City.
+    # This leaves 19 useful original columns."
 
     cleaned = select_columns(
         df,
@@ -729,35 +915,65 @@ def main():
         f"Columns dropped: {COLUMNS_TO_DROP}"
     )
 
-    # Step 3: Standardise text and date fields.
+    # -----------------------------------------------------------------------
+    # Step 3: Standardise fields
+    # -----------------------------------------------------------------------
+    # PRESENTATION GUIDE:
+    # "We remove unnecessary spaces from text fields and convert
+    # last_review into a consistent date format."
 
     cleaned = standardise_fields(
         cleaned,
         log_rows,
     )
 
-    # Step 4: Check duplicate records.
+    # -----------------------------------------------------------------------
+    # Step 4: Check duplicates
+    # -----------------------------------------------------------------------
+    # PRESENTATION GUIDE:
+    # "We check exact duplicates and also whether the same listing
+    # appears more than once in the same year and month."
 
     cleaned = check_duplicates(
         cleaned,
         log_rows,
     )
 
-    # Step 5: Check missing values.
+    # -----------------------------------------------------------------------
+    # Step 5: Check missing values
+    # -----------------------------------------------------------------------
+    # PRESENTATION GUIDE:
+    # "We document missing values instead of automatically deleting
+    # or imputing them because incomplete records can still contain
+    # useful information."
 
     check_missing_values(
         cleaned,
         log_rows,
     )
 
-    # Step 6: Validate numeric fields and flag unusual prices.
+    # -----------------------------------------------------------------------
+    # Step 6: Validate numeric fields and price outliers
+    # -----------------------------------------------------------------------
+    # PRESENTATION GUIDE:
+    # "We check price, availability, minimum nights and coordinates
+    # using logical validation rules.
+    #
+    # We also flag 153 prices above $1,000 for review rather than
+    # automatically deleting them."
 
     cleaned = validate_numeric_fields(
         cleaned,
         log_rows,
     )
 
-    # Step 7: Run final sanity checks.
+    # -----------------------------------------------------------------------
+    # Step 7: Final sanity checks
+    # -----------------------------------------------------------------------
+    # PRESENTATION GUIDE:
+    # "Before saving, we check the required coordinates, availability
+    # range and remaining duplicates to make sure the final dataset
+    # satisfies our cleaning rules."
 
     run_sanity_checks(
         cleaned,
@@ -766,7 +982,12 @@ def main():
         log_rows,
     )
 
-    # Step 8: Save the cleaned dataset and cleaning log.
+    # -----------------------------------------------------------------------
+    # Step 8: Save outputs
+    # -----------------------------------------------------------------------
+    # PRESENTATION GUIDE:
+    # "Finally, we save the cleaned dataset and a separate cleaning
+    # log so our decisions are documented and reproducible."
 
     save_outputs(
         cleaned,
@@ -815,6 +1036,10 @@ def main():
         )
     )
 
+    # PRESENTATION GUIDE:
+    # The price summary helps us inspect the distribution and identify
+    # whether there are unusually high or impossible price values.
+
     print("\nPrice summary:")
 
     print(
@@ -822,12 +1047,25 @@ def main():
         .describe()
     )
 
+    # PRESENTATION GUIDE:
+    # availability_365 should logically range from 0 to 365.
+    # The summary lets us verify that the minimum and maximum are
+    # within this valid range.
+
     print("\nAvailability summary:")
 
     print(
         cleaned["availability_365"]
         .describe()
     )
+
+    # PRESENTATION GUIDE:
+    # This shows how many observations were identified by our
+    # price_review_flag.
+    #
+    # Current result:
+    # False = 28,642
+    # True  = 153
 
     print("\nPrice values flagged for review:")
 

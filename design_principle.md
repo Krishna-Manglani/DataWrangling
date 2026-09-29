@@ -1,178 +1,69 @@
 # Data Pipeline Design Principles
 
-## Purpose
+## Purpose and scope
 
-The purpose of this pipeline is to prepare, clean, enrich, combine, and analyse Christchurch Airbnb and Tenancy Services data. The final analysis compares short-term Airbnb accommodation with long-term rental information across different areas in Christchurch.
+This project prepares monthly Christchurch Airbnb listing data and quarterly Tenancy Services rental bond data, enriches Airbnb listings with Stats NZ SA2 geography, and compares short-term listing prices and counts with long-term rent and bond counts. The scripts are separate stages rather than one orchestrated command: run them from the repository root in the order described below. The Airbnb source CSVs and the Koordinates API key are external inputs; the API key must be set in the `KOORDINATES_KEY` environment variable before running `get_area_codes.py`.
 
-## 1. Inputs to the Pipeline
+## Inputs and outputs
 
-The pipeline uses two main data sources.
+### Airbnb
 
-### Airbnb Data
+`process_listings.py` reads `listings_data/listings_*.csv` (the monthly snapshots from October 2025 through June 2026). It filters rows to Christchurch, adds `year`, `month`, and `month_year`, and writes:
 
-The Airbnb input consists of monthly listing CSV files from October 2025 to June 2026. These files contain information about Airbnb listings, including listing ID, price, location, latitude, longitude, reviews, availability, year, and month.
+- `listings_data/listings_christchurch_oct25_jun26.csv`
+- `listings_data/listings_christchurch_summary.csv`
 
-The monthly files are combined and filtered to Christchurch before being cleaned and used in later stages of the pipeline.
+`clean_listing.py` reads the combined CSV and writes `listings_data/listings_christchurch_cleaned.csv` and `listings_data/listings_cleaning_log.csv`. It retains 19 selected source columns, removes `license` and `neighbourhood_group`, standardises selected text and date fields, records missing values and validation results, and flags prices above $1,000 with `price_review_flag` instead of deleting them.
 
-### Tenancy Services Data
+`get_area_codes.py` reads the cleaned listings and writes `listings_data/listings_christchurch_with_area.csv`, adding `area_code` and `area_name`. It also reads and writes `listings_data/area_code_cache.csv` so completed coordinate lookups can be reused. A completed lookup with no SA2 feature is cached with missing area fields; failed requests are not treated as completed and can be retried on a later run.
 
-The second input is the Tenancy Services rental bond dataset. It contains long-term rental information for different locations and time periods.
+### Tenancy Services
 
-Important fields used by the pipeline include:
+`clean_tenancy.py` reads `tenancy_data/Detailed-Quarterly-Tenancy-Q1-2020-Q3-2026.csv` and writes `tenancy_data/tenancy_cleaned.csv` and `tenancy_data/tenancy_cleaning_log.csv`. It retains the 12 source columns and filters to 1 October 2025, 1 January 2026, and 1 April 2026, the three quarters covering the Airbnb study period.
 
-- Location Id
-- TimeFrame
-- Median Rent
-- Dwelling Type
-- Number Of Beds
-- Total Bonds
-- Active Bonds
-- Closed Bonds
+### Analysis and plots
 
-The tenancy data is cleaned and restricted to the quarters that correspond with the Airbnb data.
+`analysis.py` reads the enriched Airbnb CSV and cleaned tenancy CSV. It prints the Christchurch Central median Airbnb nightly price, calculates the area price gap, and compares unique Airbnb listings with bond counts for the latest tenancy quarter. It writes three figures to `output_graphs/`: `q2_price_gap_top_areas.png`, `q2_price_gap_distribution.png`, and `q3_airbnb_vs_bonds_counts.png`.
 
----
+`Deliverable3plots.py` is a separate exploratory plotting script. It reads the combined, pre-cleaning Christchurch Airbnb CSV and writes a price distribution plot plus monthly days-since-review plots under `output_graphs/`. It also prints the top 10% of listings by review count. These plots are not outputs of `analysis.py`.
 
-## 2. Outputs from the Pipeline
+## Pipeline steps
 
-The pipeline produces intermediate and final outputs.
+1. **Combine and filter Airbnb snapshots.** `process_listings.py` accepts monthly source filenames such as `listings_Oct25.csv`, chooses an available Christchurch-location column, filters to Christchurch, derives the month and year from each filename, concatenates the monthly rows, and produces a per-column summary. It warns if source files have different column counts, but still concatenates them. Its filename filter excludes generated datasets, so rerunning it does not treat its previous output as a new monthly source file.
+2. **Clean both sources independently.** `clean_listing.py` selects and validates Airbnb fields, preserves rows with legitimate missing values, and records decisions in a cleaning log. `clean_tenancy.py` selects the matching quarters, standardises fields, validates numeric and rent-ordering rules, and records its decisions in a separate log.
+3. **Enrich Airbnb geography.** `get_area_codes.py` rounds coordinates to six decimal places, looks up unique coordinate pairs through the Koordinates Query API, caches completed results, and joins area codes and names back to listing rows. It prints the successful SA2 match rate.
+4. **Compare by area and quarter.** `analysis.py` maps October–December 2025 to the 1 October quarter, January–March 2026 to 1 January, and April–June 2026 to 1 April. For the price-gap analysis it filters tenancy rows to `Dwelling Type=ALL` and `Number Of Beds=ALL`, inner-joins on SA2 area code and quarter, multiplies Airbnb nightly prices by seven, and compares that weekly equivalent with `Median Rent`. Areas with fewer than five unique matched Airbnb listing IDs are excluded from the ranking. For the count comparison, unique Airbnb listing IDs across the available Airbnb months are compared with active and total bonds in the latest tenancy quarter.
 
-The main outputs are:
+## Design and coding practices
 
-- A combined Christchurch Airbnb dataset.
-- A cleaned Christchurch Airbnb dataset.
-- A cleaned Tenancy Services dataset.
-- An Airbnb dataset enriched with Stats NZ SA2 area codes and area names.
-- A cache of completed coordinate and SA2 lookups.
-- Analysis results comparing Airbnb and long-term rental data.
-- Graphs saved in the `output_graphs` folder.
+### Modular scripts and functions
 
-The final analysis answers three main questions:
+Combining, cleaning, geographic enrichment, analysis, and exploratory plotting are kept in separate scripts. The cleaning and analysis scripts also split work into named functions. This keeps each stage understandable and makes its inputs and outputs easier to identify.
 
-1. What is the median Airbnb price in Christchurch Central?
-2. Which areas have the largest gap between weekly-equivalent Airbnb prices and long-term median rent?
-3. How do Airbnb listing counts compare with rental bond counts by area?
+### File paths and run location
 
----
+Paths are relative to the process's current working directory, not calculated from the script's location. Run the scripts from the repository root so paths such as `listings_data/...` and `tenancy_data/...` resolve as intended. This avoids machine-specific absolute paths, but the run location is part of the setup requirement.
 
-## 3. Main Steps in the Pipeline
+### Named parameters and explicit rules
 
-### Step 1: Combine Airbnb Data
+Analysis values with meaning are named near the top of the script, including `CHCH_CENTRAL_AREA_CODE` and `MIN_LISTINGS_PER_AREA`. The quarter mapping and the coordinate lookup settings are also defined explicitly. This makes key assumptions easier to find and revise.
 
-The monthly Airbnb files are combined into one dataset and filtered to Christchurch. Month and year information is retained so listings can be compared across the study period.
+### Input validation and sanity checks
 
-### Step 2: Clean the Airbnb Data
+The cleaning scripts check expected input columns and apply validation and final sanity checks. `analysis.py` checks required columns and rejects unexpected Airbnb months; it also stops if the area-and-quarter join is empty. `get_area_codes.py` checks for latitude and longitude before querying and reports the proportion of listing rows with an SA2 area code. These checks make several input and processing problems visible early, though the match-rate report is informational rather than a pass/fail threshold.
 
-The Airbnb dataset is cleaned by keeping the fields required for the project and checking the quality of important variables. The cleaned dataset is saved for later processing.
+### API key handling and caching
 
-### Step 3: Clean the Tenancy Data
+The Koordinates key is read from the `KOORDINATES_KEY` environment variable and is not embedded in the source. The coordinate cache avoids repeating completed lookups, including completed lookups that returned no area feature. Request failures are omitted from the cache so a rerun can try them again.
 
-The Tenancy Services dataset is cleaned separately. The required time periods are selected so that the tenancy data corresponds with the Airbnb study period.
+### Logs and documentation
 
-### Step 4: Add SA2 Area Codes
+The cleaning scripts save CSV logs with cleaning decisions, reasons, and impacts. Docstrings and comments describe script behavior; some comments are presentation notes explaining code-review changes. The design principles document describes implemented behavior and the assumptions those scripts use.
 
-`get_area_codes.py` uses the latitude and longitude of Airbnb listings to obtain Stats NZ SA2 area codes and area names through the Koordinates API.
+## Alignment review
 
-Completed coordinate lookups are cached so that the same locations do not need to be requested again when the script is rerun.
+The implementation and this document were compared script by script. This review corrected descriptions that did not match the code: file paths are resolved from the current working directory (so the repository root is the expected run location), and the area lookup cache includes completed no-feature results as well as successful matches. It also found that `process_listings.py` originally selected every `listings_*.csv`, including its own generated outputs on later runs. The input selection now accepts monthly snapshot filenames only. The exploratory plots from `Deliverable3plots.py` are distinguished from the three analysis plots. The intended geographic and time-period comparisons are reflected in the analysis description above.
 
-### Step 5: Combine Airbnb and Tenancy Data
+## AI use
 
-In `analysis.py`, Airbnb months are mapped to the corresponding tenancy quarters. The Airbnb and tenancy datasets are then matched using the SA2 area code and quarter.
-
-### Step 6: Analyse the Data
-
-The combined data is used to calculate and compare Airbnb and long-term rental information.
-
-The analysis calculates:
-
-- The median Airbnb nightly price in Christchurch Central.
-- The difference between weekly-equivalent Airbnb prices and weekly median rent by area.
-- Airbnb listing counts compared with active rental bond counts.
-
-Graphs from the analysis are saved in the `output_graphs` folder.
-
----
-
-## 4. Coding and Software Strategies
-
-Several coding and software practices are used to make the pipeline easier to understand, maintain, and check.
-
-### Modular Code
-
-Different stages of the pipeline are separated into different Python scripts. For example, data processing, cleaning, geographic enrichment, and analysis are handled separately. Functions are also used within the scripts to separate individual tasks.
-
-This makes the pipeline easier to understand and allows problems to be identified within a particular stage.
-
-### Relative File Paths
-
-The scripts use relative file paths based on the project directory instead of absolute paths that are specific to one computer.
-
-This makes it easier for different team members to run the project without changing file paths for their own computers.
-
-### Clear Parameters
-
-Important values are given descriptive parameter names.
-
-For example:
-
-`CHCH_CENTRAL_AREA_CODE = 326600`
-
-is used instead of placing `326600` directly inside the analysis function.
-
-This avoids a magic number and makes the purpose of the value clearer.
-
-### Input Validation
-
-The pipeline checks that important columns are available before some processing steps are performed.
-
-For example, `analysis.py` checks the required columns in the Airbnb and tenancy datasets. `get_area_codes.py` checks that latitude and longitude columns are available before geographic API requests are made.
-
-This helps identify incorrect inputs earlier in the pipeline.
-
-### Sanity Checking
-
-Sanity checks are used to check important intermediate or output results before they are trusted.
-
-In `analysis.py`, the pipeline checks whether the join between the Airbnb and tenancy datasets produced any records. If no records match by area code and quarter, the pipeline stops with an error instead of continuing with the price-gap analysis.
-
-In `get_area_codes.py`, the pipeline also reports the percentage of Airbnb listings that successfully received an SA2 area code. This provides a simple check of whether the geographic enrichment worked as expected.
-
-### API Key Management
-
-The Koordinates API key is stored in the `KOORDINATES_KEY` environment variable instead of being written directly into the Python source code.
-
-This keeps the API key separate from the code and reduces the risk of accidentally committing it to the repository.
-
-### Caching API Results
-
-Completed SA2 coordinate lookups are stored in `area_code_cache.csv`.
-
-This allows the geographic enrichment process to be resumed without repeating successful API requests.
-
-### Documentation
-
-Docstrings and comments are used to describe the purpose of the scripts, their inputs and outputs, and important processing steps.
-
-Comments were also added during the Week 9 code review to document the coding-practice changes and provide a guide for explaining the changes during the presentation.
-
----
-
-## Design and Code Alignment Check
-
-The Design Principles document was reviewed against the actual pipeline to make sure that the documented design matches the implementation.
-
-The inputs, outputs, main pipeline steps, and coding strategies described above are reflected in the current project code.
-
-During the Week 9 code review, some areas for improvement were identified. These included replacing a magic number with a named parameter, adding input validation, and adding sanity checks to important pipeline steps. These changes were added to the existing code without changing the main analysis process.
-
-The updated code was also checked against the intended pipeline so that the documentation and implementation remain consistent.
-
----
-
-## AI Use
-
-AI tool used: **ChatGPT (OpenAI)**.
-
-ChatGPT was used to assist with reviewing the existing pipeline against the coding practices discussed in the lectures and to help construct this Design Principles document.
-
-The AI-generated suggestions were reviewed against the actual project code. The final content and coding decisions reflect the team's understanding of the pipeline and the decisions made during the project.
+ChatGPT (OpenAI) assisted with reviewing the code against the design principles and drafting this document. The project code and analysis assumptions were used to check the final descriptions.

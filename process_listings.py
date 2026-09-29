@@ -177,9 +177,19 @@ def build_summary(df: pd.DataFrame) -> pd.DataFrame:
  
  
 def main():
-    files = sorted(DATA_DIR.glob("listings_*.csv"))
+    # Accept only monthly source snapshots such as listings_Oct25.csv.
+    # The broad listings_*.csv pattern also matches this script's own
+    # outputs (and cleaned/enriched datasets) on later runs.
+    files = sorted(
+        filepath
+        for filepath in DATA_DIR.glob("listings_*.csv")
+        if re.fullmatch(r"listings_[A-Za-z]+\d{2}\.csv", filepath.name)
+    )
     if not files:
-        raise FileNotFoundError(f"No listings_*.csv files found in {DATA_DIR}/")
+        raise FileNotFoundError(
+            f"No monthly listings snapshots found in {DATA_DIR}/ "
+            "(expected names such as listings_Oct25.csv)."
+        )
  
     print(f"Found {len(files)} files:")
     for f in files:

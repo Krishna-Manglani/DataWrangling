@@ -1,46 +1,31 @@
 """
-Enrich the cleaned Christchurch Airbnb dataset with Stats NZ Statistical
-Area 2 (SA2) area codes and names using the Koordinates Query API.
+Add Stats NZ Statistical Area 2 (SA2) codes to the cleaned Christchurch
+Airbnb dataset using the Koordinates Query API.
+
+The script:
+1. Loads the cleaned Airbnb dataset.
+2. Creates unique coordinate keys from latitude and longitude.
+3. Reuses previous API results stored in area_code_cache.csv.
+4. Queries Koordinates only for coordinates that are not already cached.
+5. Adds area_code and area_name back to all Airbnb rows.
+6. Runs sanity checks and saves the enriched dataset.
+
+This allows new Airbnb months to be processed without repeating API
+requests for locations that have already been matched.
 
 Input:
-    - listings_data/listings_christchurch_cleaned.csv
-      Cleaned Christchurch Airbnb listings containing latitude and longitude.
+    listings_data/listings_christchurch_cleaned.csv
 
-Main steps:
-    1. Read the cleaned Airbnb dataset.
-    2. Validate that latitude and longitude columns are available.
-    3. Round coordinates and create unique coordinate keys.
-    4. Test the Stats NZ SA2 layer and identify its code/name fields.
-    5. Query Koordinates for each unique coordinate.
-    6. Cache completed lookups so interrupted runs can resume.
-    7. Join the returned SA2 area code and area name back to the listings.
-    8. Check the percentage of listings successfully matched to an SA2 area.
-
-Output:
-    - listings_data/listings_christchurch_with_area.csv
-      Airbnb data containing the added area_code and area_name columns.
-    - listings_data/area_code_cache.csv
-      Cached coordinate lookups used to avoid repeating API requests.
+Outputs:
+    listings_data/listings_christchurch_with_area.csv
+    listings_data/area_code_cache.csv
 
 API key:
-    The Koordinates API key is read from the KOORDINATES_KEY environment
-    variable. The key is not stored directly in this source file.
-
-Setup:
-    macOS/Linux:
-        export KOORDINATES_KEY="your_key_here"
-
-    Windows CMD:
-        set KOORDINATES_KEY=your_key_here
-
-    Windows PowerShell:
-        $env:KOORDINATES_KEY="your_key_here"
+    Set the KOORDINATES_KEY environment variable before running this script.
 
 Usage:
-    python get_area_codes.py --test    # test one coordinate and stop
-    python get_area_codes.py           # process all remaining coordinates
-
-The script is resumable because completed lookups are stored in the cache.
+    python get_area_codes.py
+    python get_area_codes.py --test
 """
 
 import argparse
@@ -48,64 +33,98 @@ import os
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
 
 import pandas as pd
 import requests
 
-HOSTS = ["https://koordinates.com", "https://datafinder.stats.govt.nz"]
+
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
+
+HOSTS = [
+    "https://koordinates.com",
+    "https://datafinder.stats.govt.nz",
+]
+
 DEFAULT_LAYER = 123515
-LAT_COL, LON_COL = "latitude", "longitude"
+
+DEFAULT_INPUT = Path(
+    "listings_data/listings_christchurch_cleaned.csv"
+)
+
+DEFAULT_OUTPUT = Path(
+    "listings_data/listings_christchurch_with_area.csv"
+)
+
+DEFAULT_CACHE = Path(
+    "listings_data/area_code_cache.csv"
+)
+
+LAT_COL = "latitude"
+LON_COL = "longitude"
+
 N_WORKERS = 8
 CHECKPOINT_EVERY = 500
+MAX_RETRIES = 5
 
-KEY = os.environ.get("KOORDINATES_KEY")
 HOST = None
 LAYER = DEFAULT_LAYER
 
 
-def raw_query(host, lat, lon, radius):
-    """Send one Koordinates query and return its features and status."""
+# ---------------------------------------------------------------------------
+# Koordinates API functions
+# ---------------------------------------------------------------------------
 
-    params = dict(
-        key=KEY,
-        layer=LAYER,
-        x=lon,
-        y=lat,
-        max_results=1,
-        radius=radius
-    )
+def raw_query(host, lat, lon, radius, api_key):
+    """
+    Send one request to the Koordinates Vector Query API.
+
+    Temporary server and rate-limit errors are retried automatically.
+    """
+    params = {
+        "key": api_key,
+        "layer": LAYER,
+        "x": lon,
+        "y": lat,
+        "max_results": 1,
+        "radius": radius,
+    }
 
     note = "no response"
 
-    for attempt in range(5):
+    for attempt in range(MAX_RETRIES):
         try:
-            r = requests.get(
+            response = requests.get(
                 f"{host}/services/query/v1/vector.json",
                 params=params,
-                timeout=30
+                timeout=30,
             )
 
-        except requests.RequestException as e:
-            note = f"network error: {e.__class__.__name__}"
+        except requests.RequestException as error:
+            note = f"network error: {error.__class__.__name__}"
             time.sleep(2 ** attempt)
             continue
 
-        if r.status_code == 200:
+        if response.status_code == 200:
             try:
-                return (
-                    r.json()["vectorQuery"]["layers"][str(LAYER)]["features"],
-                    "ok"
+                features = (
+                    response.json()
+                    ["vectorQuery"]
+                    ["layers"]
+                    [str(LAYER)]
+                    ["features"]
                 )
+
+                return features, "ok"
 
             except (KeyError, ValueError):
-                return (
-                    None,
-                    "unexpected response structure: " + r.text[:200]
-                )
+                return None, "unexpected API response"
 
-        note = f"HTTP {r.status_code}"
+        note = f"HTTP {response.status_code}"
 
-        if r.status_code in (429, 500, 502, 503, 504):
+        if response.status_code in (429, 500, 502, 503, 504):
             time.sleep(2 ** attempt)
             continue
 
@@ -114,361 +133,734 @@ def raw_query(host, lat, lon, radius):
     return None, note
 
 
-def find_fields(props):
-    """Identify the SA2 code and area-name fields returned by Koordinates."""
-
-    code = next(
+def find_fields(properties):
+    """
+    Find the SA2 code and SA2 name fields returned by the API.
+    """
+    code_field = next(
         (
-            k for k in props
-            if "SA2" in k.upper()
-            and "NAME" not in k.upper()
+            column
+            for column in properties
+            if "SA2" in column.upper()
+            and "NAME" not in column.upper()
         ),
-        None
+        None,
     )
 
-    name = next(
+    name_field = next(
         (
-            k for k in props
-            if "SA2" in k.upper()
-            and "NAME" in k.upper()
+            column
+            for column in properties
+            if "SA2" in column.upper()
+            and "NAME" in column.upper()
         ),
-        None
+        None,
     )
 
-    return code, name
+    return code_field, name_field
 
 
-def lookup(lat, lon):
-    """Look up the SA2 area code and name for one coordinate pair."""
-
-    for radius in (1, 1000):
-        feats, _ = raw_query(HOST, lat, lon, radius)
-
-        if feats is None:
-            return None
-
-        if feats:
-            props = feats[0]["properties"]
-            code, name = find_fields(props)
-
-            return dict(
-                area_code=props.get(code),
-                area_name=props.get(name)
-            )
-
-    return dict(
-        area_code=None,
-        area_name=None
-    )
-
-
-def pick_host(lat, lon):
-    """Find a Koordinates host that returns data for the selected SA2 layer."""
-
+def pick_host(lat, lon, api_key):
+    """
+    Test available Koordinates hosts and return the first working host.
+    """
     for host in HOSTS:
         for radius in (1, 1000):
-            feats, note = raw_query(host, lat, lon, radius)
-
-            print(
-                f"  {host} (radius {radius} m): {note}, "
-                f"{0 if not feats else len(feats)} feature(s)"
+            features, note = raw_query(
+                host,
+                lat,
+                lon,
+                radius,
+                api_key,
             )
 
-            if feats:
-                return host, feats[0]["properties"]
+            count = len(features) if features else 0
+
+            print(
+                f"  {host} (radius {radius} m): "
+                f"{note}, {count} feature(s)"
+            )
+
+            if features:
+                return host, features[0]["properties"]
 
     return None, None
 
 
-def main():
-    """Run the SA2 enrichment process and save the enriched Airbnb dataset."""
-
-    global HOST, LAYER
-
-    ap = argparse.ArgumentParser()
-
-    ap.add_argument(
-        "--test",
-        action="store_true",
-        help="run a single query and stop"
-    )
-
-    ap.add_argument(
-        "--in",
-        dest="in_file",
-        default="listings_data/listings_christchurch_cleaned.csv"
-    )
-
-    ap.add_argument(
-        "--out",
-        dest="out_file",
-        default="listings_data/listings_christchurch_with_area.csv"
-    )
-
-    ap.add_argument(
-        "--cache",
-        default="listings_data/area_code_cache.csv"
-    )
-
-    ap.add_argument(
-        "--layer",
-        type=int,
-        default=DEFAULT_LAYER
-    )
-
-    args = ap.parse_args()
-    LAYER = args.layer
-
-    if not KEY:
-        sys.exit(
-            "Set the KOORDINATES_KEY environment variable first "
-            "(see top of file)."
+def lookup(lat, lon, api_key):
+    """
+    Look up the SA2 area code and name for one coordinate.
+    """
+    for radius in (1, 1000):
+        features, _ = raw_query(
+            HOST,
+            lat,
+            lon,
+            radius,
+            api_key,
         )
 
-    df = pd.read_csv(args.in_file)
+        # None means the API request itself failed.
+        if features is None:
+            return None
 
-    # ========================================================
-    # DELIVERABLE 6 CHANGE 5: Validate coordinate columns
-    #
-    # PREVIOUS CODE:
-    #     df = pd.read_csv(args.in_file)
-    #     df["lat_r"] = df[LAT_COL].round(6)
-    #     df["lon_r"] = df[LON_COL].round(6)
-    #
-    # MODIFIED CODE:
-    # We check for the required coordinate columns before trying
-    # to use them or sending API requests.
-    #
-    # NOTES:
-    # Previously, the code immediately tried to use latitude and
-    # longitude after reading the file. If either column was missing,
-    # the script would fail later. The new validation makes the
-    # expected input clear and catches the problem before any API
-    # processing begins.
-    # ========================================================
-    required_columns = {LAT_COL, LON_COL}
-    missing_columns = required_columns - set(df.columns)
+        if features:
+            properties = features[0]["properties"]
 
-    if missing_columns:
+            code_field, name_field = find_fields(
+                properties
+            )
+
+            if code_field is None:
+                return None
+
+            return {
+                "area_code": properties.get(code_field),
+                "area_name": properties.get(name_field),
+            }
+
+    # The request succeeded but the location had no spatial match.
+    return {
+        "area_code": None,
+        "area_name": None,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Airbnb input preparation
+# ---------------------------------------------------------------------------
+
+def load_listings(filepath):
+    """
+    Load the cleaned Airbnb dataset and validate its coordinates.
+    """
+    filepath = Path(filepath)
+
+    if not filepath.exists():
+        raise FileNotFoundError(
+            f"Input file not found: {filepath}"
+        )
+
+    df = pd.read_csv(
+        filepath,
+        low_memory=False,
+    )
+
+    if df.empty:
         raise ValueError(
-            f"Airbnb data is missing required columns: {sorted(missing_columns)}"
+            "Airbnb input dataset is empty."
         )
 
-    df["lat_r"] = df[LAT_COL].round(6)
-    df["lon_r"] = df[LON_COL].round(6)
+    required = {
+        LAT_COL,
+        LON_COL,
+    }
 
-    df["coord_key"] = (
-        df["lat_r"].astype(str)
+    missing = required - set(df.columns)
+
+    if missing:
+        raise ValueError(
+            f"Missing required column(s): {sorted(missing)}"
+        )
+
+    if df[[LAT_COL, LON_COL]].isna().any().any():
+        raise ValueError(
+            "Missing latitude or longitude values found."
+        )
+
+    if not df[LAT_COL].between(-90, 90).all():
+        raise ValueError(
+            "Invalid latitude values found."
+        )
+
+    if not df[LON_COL].between(-180, 180).all():
+        raise ValueError(
+            "Invalid longitude values found."
+        )
+
+    return df
+
+
+def prepare_coordinates(df):
+    """
+    Create rounded coordinate keys and a table of unique locations.
+    """
+    prepared = df.copy()
+
+    prepared["lat_r"] = (
+        prepared[LAT_COL]
+        .round(6)
+    )
+
+    prepared["lon_r"] = (
+        prepared[LON_COL]
+        .round(6)
+    )
+
+    prepared["coord_key"] = (
+        prepared["lat_r"].astype(str)
         + ","
-        + df["lon_r"].astype(str)
+        + prepared["lon_r"].astype(str)
     )
 
-    coords = df[
-        ["lat_r", "lon_r", "coord_key"]
-    ].drop_duplicates("coord_key")
-
-    print(
-        f"Testing layer {LAYER} with the first listing's coordinates..."
+    coords = (
+        prepared[
+            [
+                "lat_r",
+                "lon_r",
+                "coord_key",
+            ]
+        ]
+        .drop_duplicates("coord_key")
+        .reset_index(drop=True)
     )
 
-    first = coords.iloc[0]
-
-    HOST, props = pick_host(
-        first["lat_r"],
-        first["lon_r"]
-    )
-
-    if HOST is None:
-        sys.exit(
-            "\nNo host returned a result. Check: "
-            "(1) key is correct, "
-            "(2) layer ID is right for that site, "
-            "(3) lat/lon aren't swapped. "
-            "Copy the URL from the layer's Services tab to compare."
+    if coords.empty:
+        raise ValueError(
+            "No coordinates available for SA2 lookup."
         )
 
-    code_f, name_f = find_fields(props)
+    return prepared, coords
 
-    print(
-        f"Using host: {HOST}\n"
-        f"Properties returned: {props}"
-    )
 
-    print(
-        f"Detected code field: {code_f!r}, "
-        f"name field: {name_f!r}"
-    )
+# ---------------------------------------------------------------------------
+# Cache functions
+# ---------------------------------------------------------------------------
 
-    if code_f is None:
-        sys.exit(
-            "Couldn't find the SA2 code field in the properties above; "
-            "tell me what the field is called and I'll fix find_fields()."
-        )
+def load_cache(filepath):
+    """
+    Load previous coordinate lookups.
 
-    if args.test:
-        return
+    If no cache exists, return an empty cache.
+    """
+    filepath = Path(filepath)
 
-    cols = ["coord_key", "area_code", "area_name"]
-
-    if os.path.exists(args.cache):
-        done = pd.read_csv(
-            args.cache,
-            dtype={"area_code": "string"}
-        )
-
-    else:
-        done = pd.DataFrame(columns=cols)
-
-    todo = coords[
-        ~coords["coord_key"].isin(done["coord_key"])
+    columns = [
+        "coord_key",
+        "area_code",
+        "area_name",
     ]
 
-    print(
-        f"\n{len(coords)} unique points; "
-        f"{len(todo)} still to query"
+    if not filepath.exists():
+        return pd.DataFrame(
+            columns=columns
+        )
+
+    cache = pd.read_csv(
+        filepath,
+        dtype={
+            "coord_key": "string",
+            "area_code": "string",
+            "area_name": "string",
+        },
     )
 
-    results, failed = [], 0
+    missing = set(columns) - set(cache.columns)
 
-    with ThreadPoolExecutor(max_workers=N_WORKERS) as pool:
+    if missing:
+        raise ValueError(
+            f"Cache is missing column(s): {sorted(missing)}"
+        )
+
+    cache = (
+        cache[columns]
+        .drop_duplicates(
+            "coord_key",
+            keep="last",
+        )
+        .reset_index(drop=True)
+    )
+
+    return cache
+
+
+def save_cache(cache, filepath):
+    """
+    Save coordinate lookup results to the cache.
+    """
+    filepath = Path(filepath)
+
+    filepath.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    cache.to_csv(
+        filepath,
+        index=False,
+    )
+
+
+def get_uncached_coordinates(coords, cache):
+    """
+    Return coordinates that have not already been processed.
+    """
+    if cache.empty:
+        return coords.copy()
+
+    cached_keys = set(
+        cache["coord_key"]
+        .dropna()
+        .astype(str)
+    )
+
+    todo = coords[
+        ~coords["coord_key"]
+        .astype(str)
+        .isin(cached_keys)
+    ].copy()
+
+    return todo
+
+
+# ---------------------------------------------------------------------------
+# Query new coordinates
+# ---------------------------------------------------------------------------
+
+def query_new_coordinates(
+    todo,
+    cache,
+    cache_file,
+    api_key,
+):
+    """
+    Query uncached coordinates in parallel and update the cache.
+
+    Progress is checkpointed so completed API requests are not lost if the
+    process is interrupted.
+    """
+    new_results = []
+    failed = 0
+
+    with ThreadPoolExecutor(
+        max_workers=N_WORKERS
+    ) as executor:
 
         futures = {
-            pool.submit(
+            executor.submit(
                 lookup,
-                r.lat_r,
-                r.lon_r
-            ): r.coord_key
-            for r in todo.itertuples()
+                row.lat_r,
+                row.lon_r,
+                api_key,
+            ): row.coord_key
+
+            for row in todo.itertuples()
         }
 
-        for i, fut in enumerate(
+        for number, future in enumerate(
             as_completed(futures),
-            1
+            start=1,
         ):
-            res = fut.result()
+            coord_key = futures[future]
 
-            if res is None:
+            try:
+                result = future.result()
+
+            except Exception:
+                result = None
+
+            if result is None:
                 failed += 1
 
             else:
-                res["coord_key"] = futures[fut]
-                results.append(res)
+                result["coord_key"] = coord_key
+                new_results.append(result)
 
-            if i % CHECKPOINT_EVERY == 0:
-                print(
-                    f"  {i}/{len(todo)} done "
-                    f"({failed} failed so far)"
-                )
-
-                pd.concat(
+            # Save progress regularly.
+            if (
+                number % CHECKPOINT_EVERY == 0
+                or number == len(todo)
+            ):
+                checkpoint = pd.concat(
                     [
-                        done,
-                        pd.DataFrame(
-                            results,
-                            columns=cols
-                        )
-                    ]
-                )[cols].to_csv(
-                    args.cache,
-                    index=False
+                        cache,
+                        pd.DataFrame(new_results),
+                    ],
+                    ignore_index=True,
                 )
 
-    lookup_df = pd.concat(
+                checkpoint = (
+                    checkpoint
+                    .drop_duplicates(
+                        "coord_key",
+                        keep="last",
+                    )
+                )
+
+                save_cache(
+                    checkpoint,
+                    cache_file,
+                )
+
+                print(
+                    f"  {number}/{len(todo)} processed "
+                    f"({failed} failed)"
+                )
+
+    updated_cache = pd.concat(
         [
-            done,
-            pd.DataFrame(
-                results,
-                columns=cols
-            )
-        ]
-    )[cols]
-
-    lookup_df.to_csv(
-        args.cache,
-        index=False
+            cache,
+            pd.DataFrame(new_results),
+        ],
+        ignore_index=True,
     )
 
-    if failed:
-        print(
-            f"\n{failed} lookups failed (network/rate limit). "
-            "Re-run the script to retry only those."
+    updated_cache = (
+        updated_cache
+        .drop_duplicates(
+            "coord_key",
+            keep="last",
         )
+        .reset_index(drop=True)
+    )
 
-    out = (
-        df.merge(
-            lookup_df,
-            on="coord_key",
-            how="left"
-        )
-        .drop(
-            columns=[
-                "lat_r",
-                "lon_r",
-                "coord_key"
+    save_cache(
+        updated_cache,
+        cache_file,
+    )
+
+    return updated_cache, failed
+
+
+# ---------------------------------------------------------------------------
+# Join SA2 results back to Airbnb
+# ---------------------------------------------------------------------------
+
+def add_area_codes(df, cache):
+    """
+    Join cached SA2 information back to all Airbnb rows.
+    """
+    original_rows = len(df)
+
+    output = df.merge(
+        cache[
+            [
+                "coord_key",
+                "area_code",
+                "area_name",
             ]
-        )
+        ],
+        on="coord_key",
+        how="left",
+        validate="many_to_one",
     )
 
-    out["area_code"] = (
+    if len(output) != original_rows:
+        raise ValueError(
+            "Row count changed after joining area codes."
+        )
+
+    output = output.drop(
+        columns=[
+            "lat_r",
+            "lon_r",
+            "coord_key",
+        ]
+    )
+
+    output["area_code"] = (
         pd.to_numeric(
-            out["area_code"],
-            errors="coerce"
+            output["area_code"],
+            errors="coerce",
         )
         .astype("Int64")
     )
 
-    # ========================================================
-    # DELIVERABLE 6 CHANGE 6: SA2 match-rate sanity check
-    #
-    # PREVIOUS CODE:
-    #     print("\nListings without an area code:",
-    #           int(out["area_code"].isna().sum()),
-    #           f"of {len(out)}")
-    #
-    # MODIFIED CODE:
-    # We still report missing area codes, but we now also calculate
-    # the proportion of listings that were successfully matched.
-    #
-    # NOTES:
-    # The previous code already gave us useful information about
-    # unmatched listings. We improved this by calculating a match
-    # percentage. This makes the result easier to interpret as a
-    # sanity check because we can quickly see how much of the Airbnb
-    # dataset was successfully enriched with SA2 information.
-    # ========================================================
-    matched = out["area_code"].notna().sum()
-    total = len(out)
-    match_rate = matched / total if total > 0 else 0
+    return output
+
+
+def sanity_check(original, output):
+    """
+    Run final validation and report the SA2 match rate.
+    """
+    if output.empty:
+        raise ValueError(
+            "Final output dataset is empty."
+        )
+
+    if len(output) != len(original):
+        raise ValueError(
+            "Final output row count does not match input."
+        )
+
+    required = {
+        LAT_COL,
+        LON_COL,
+        "area_code",
+        "area_name",
+    }
+
+    missing = required - set(output.columns)
+
+    if missing:
+        raise ValueError(
+            f"Final output is missing: {sorted(missing)}"
+        )
+
+    matched = int(
+        output["area_code"]
+        .notna()
+        .sum()
+    )
+
+    total = len(output)
+
+    match_rate = (
+        matched / total
+        if total
+        else 0
+    )
 
     print(
-        f"\nSanity check: {matched}/{total} listings received "
+        f"\nSanity check: "
+        f"{matched}/{total} listings received "
         f"an SA2 area code ({match_rate:.1%})."
     )
 
     print(
-        "\nListings without an area code:",
-        int(out["area_code"].isna().sum()),
-        f"of {len(out)}"
+        "Listings without an area code:",
+        int(
+            output["area_code"]
+            .isna()
+            .sum()
+        ),
+        f"of {total}",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Command-line arguments
+# ---------------------------------------------------------------------------
+
+def parse_args():
+    """
+    Read command-line options.
+    """
+    parser = argparse.ArgumentParser(
+        description=(
+            "Add Stats NZ SA2 area codes "
+            "to Christchurch Airbnb listings."
+        )
+    )
+
+    parser.add_argument(
+        "--test",
+        action="store_true",
+        help="test the API with one uncached coordinate and stop",
+    )
+
+    parser.add_argument(
+        "--in",
+        dest="in_file",
+        default=str(DEFAULT_INPUT),
+        help="input cleaned Airbnb CSV",
+    )
+
+    parser.add_argument(
+        "--out",
+        dest="out_file",
+        default=str(DEFAULT_OUTPUT),
+        help="output Airbnb CSV with SA2 areas",
+    )
+
+    parser.add_argument(
+        "--cache",
+        default=str(DEFAULT_CACHE),
+        help="coordinate lookup cache",
+    )
+
+    parser.add_argument(
+        "--layer",
+        type=int,
+        default=DEFAULT_LAYER,
+        help="Koordinates layer ID",
+    )
+
+    return parser.parse_args()
+
+
+# ---------------------------------------------------------------------------
+# Main pipeline stage
+# ---------------------------------------------------------------------------
+
+def main():
+    """
+    Run the complete SA2 enrichment stage.
+    """
+    global HOST, LAYER
+
+    args = parse_args()
+    LAYER = args.layer
+
+    # Load and validate the latest cleaned Airbnb dataset.
+    df = load_listings(
+        args.in_file
     )
 
     print(
-        out
-        .drop_duplicates("area_code")[
-            ["area_code", "area_name"]
-        ]
-        .dropna()
-        .sort_values("area_code")
-        .to_string(index=False)
-    )
-
-    out.to_csv(
-        args.out_file,
-        index=False
+        f"Loaded Airbnb dataset: "
+        f"{len(df)} rows, "
+        f"{len(df.columns)} columns"
     )
 
     print(
-        "\nSaved",
+        "Input coordinate sanity checks passed."
+    )
+
+    # Prepare unique locations.
+    prepared, coords = prepare_coordinates(
+        df
+    )
+
+    print(
+        f"Unique coordinates: {len(coords)}"
+    )
+
+    # Reuse previous geocoding work.
+    cache = load_cache(
+        args.cache
+    )
+
+    todo = get_uncached_coordinates(
+        coords,
+        cache,
+    )
+
+    print(
+        f"Coordinates already cached: {len(cache)}"
+    )
+
+    print(
+        f"New coordinates requiring lookup: {len(todo)}"
+    )
+
+    # Contact Koordinates only when new coordinates need processing.
+    if not todo.empty:
+        api_key = os.environ.get(
+            "KOORDINATES_KEY"
+        )
+
+        if not api_key:
+            sys.exit(
+                "New coordinates require Koordinates, but "
+                "KOORDINATES_KEY is not set."
+            )
+
+        first = todo.iloc[0]
+
+        print(
+            f"\nTesting layer {LAYER} "
+            "with the first new coordinate..."
+        )
+
+        HOST, properties = pick_host(
+            first["lat_r"],
+            first["lon_r"],
+            api_key,
+        )
+
+        if HOST is None:
+            sys.exit(
+                "\nNo Koordinates host returned a result. "
+                "The existing cache has not been changed. "
+                "Check the API service and try again."
+            )
+
+        code_field, name_field = find_fields(
+            properties
+        )
+
+        if code_field is None:
+            sys.exit(
+                "Could not identify the SA2 code field "
+                "returned by the API."
+            )
+
+        print(
+            f"Using host: {HOST}"
+        )
+
+        print(
+            f"Detected fields: "
+            f"{code_field}, {name_field}"
+        )
+
+        if args.test:
+            print(
+                "API test successful. "
+                "No dataset changes were made."
+            )
+            return
+
+        print(
+            f"\nQuerying {len(todo)} "
+            "new coordinates..."
+        )
+
+        cache, failed = query_new_coordinates(
+            todo,
+            cache,
+            args.cache,
+            api_key,
+        )
+
+        if failed:
+            print(
+                f"Warning: {failed} coordinate lookup(s) failed. "
+                "They will be retried on the next run."
+            )
+
+    else:
+        print(
+            "All coordinates are already cached. "
+            "No API requests are needed."
+        )
+
+        if args.test:
+            print(
+                "Test complete: "
+                "no uncached coordinates to query."
+            )
+            return
+
+    # Add SA2 information to every listing-month row.
+    output = add_area_codes(
+        prepared,
+        cache,
+    )
+
+    sanity_check(
+        df,
+        output,
+    )
+
+    # Save the updated geocoded Airbnb dataset.
+    output_path = Path(
         args.out_file
+    )
+
+    output_path.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    output.to_csv(
+        output_path,
+        index=False,
+    )
+
+    print(
+        "\nFinal sanity checks passed."
+    )
+
+    print(
+        f"Saved enriched dataset to: "
+        f"{output_path}"
+    )
+
+    print(
+        f"Coordinate cache: "
+        f"{args.cache}"
     )
 
 

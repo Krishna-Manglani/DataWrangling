@@ -1,34 +1,36 @@
 """
-Deliverable 4: Clean the Tenancy Services rental bond dataset.
+Clean and validate the Tenancy Services rental bond dataset.
 
-Pipeline:
-  1. Load the Detailed Quarterly Rental Bond dataset.
-  2. Check that all expected columns are present.
-  3. Retain all useful columns.
-  4. Convert TimeFrame from DD/MM/YYYY to a proper date.
-  5. Filter the timeframe to match the Airbnb dataset.
-  6. Standardise selected text fields.
-  7. Check for exact duplicate records.
-  8. Check and document missing values.
-  9. Validate bond count and rent fields.
- 10. Check the logical ordering of rent quartiles.
- 11. Run final sanity checks.
- 12. Save the cleaned dataset and cleaning log.
+This script prepares the Tenancy Services data used in the project's
+Airbnb-versus-long-term-rental analysis.
 
-Airbnb comparison period:
-  October 2025 to June 2026
+The cleaning decisions are based on the work completed in the previous
+deliverables. The script is structured so that it can also be run as one
+stage of an automated pipeline.
 
-Matching Tenancy quarters:
-  1 October 2025
-  1 January 2026
-  1 April 2026
+Main steps:
+    1. Load the raw Tenancy Services dataset.
+    2. Check that the expected columns are present.
+    3. Keep the 12 columns required for the project.
+    4. Convert TimeFrame to a proper date.
+    5. Filter to the tenancy quarters used in the project.
+    6. Standardise selected text fields.
+    7. Remove exact duplicate rows.
+    8. Document missing values.
+    9. Validate bond-count and rent fields.
+   10. Check the logical ordering of rent statistics.
+   11. Run final sanity checks.
+   12. Save the cleaned dataset and cleaning log.
 
-Expected input:
-  tenancy_data/Detailed-Quarterly-Tenancy-Q1-2020-Q3-2026.csv
+Input:
+    tenancy_data/Detailed-Quarterly-Tenancy-Q1-2020-Q3-2026.csv
 
 Outputs:
-  tenancy_data/tenancy_cleaned.csv
-  tenancy_data/tenancy_cleaning_log.csv
+    tenancy_data/tenancy_cleaned.csv
+    tenancy_data/tenancy_cleaning_log.csv
+
+Run from the repository root:
+    python clean_tenancy.py
 """
 
 from pathlib import Path
@@ -37,43 +39,30 @@ import pandas as pd
 
 
 # ---------------------------------------------------------------------------
-# Config
+# Configuration
 # ---------------------------------------------------------------------------
-# PRESENTATION GUIDE:
-# These variables define where the original Tenancy dataset is located
-# and where our cleaned dataset and cleaning log will be saved.
-#
-# Keeping the file paths together makes the script easier to maintain.
-# We also save the cleaned data separately instead of overwriting the
-# original downloaded dataset.
 
-DATA_FILE = Path(
-    "tenancy_data/Detailed-Quarterly-Tenancy-Q1-2020-Q3-2026.csv"
+DATA_DIR = Path("tenancy_data")
+
+DATA_FILE = (
+    DATA_DIR
+    / "Detailed-Quarterly-Tenancy-Q1-2020-Q3-2026.csv"
 )
 
-OUTPUT_FILE = Path(
-    "tenancy_data/tenancy_cleaned.csv"
+OUTPUT_FILE = (
+    DATA_DIR
+    / "tenancy_cleaned.csv"
 )
 
-CLEANING_LOG_FILE = Path(
-    "tenancy_data/tenancy_cleaning_log.csv"
+CLEANING_LOG_FILE = (
+    DATA_DIR
+    / "tenancy_cleaning_log.csv"
 )
 
 
-# ---------------------------------------------------------------------------
-# Columns
-# ---------------------------------------------------------------------------
-# PRESENTATION GUIDE:
-# We reviewed all 12 columns in the Tenancy dataset.
-#
-# Unlike the Airbnb dataset, we did not find any column that was
-# completely empty or clearly redundant.
-#
-# Therefore, all 12 columns were retained.
-#
-# Location Id and TimeFrame are especially important because the
-# Deliverable 4 instructions specifically require us to keep them.
-
+# These are the 12 columns retained from the original Tenancy dataset.
+# Location Id is needed for geographic matching and TimeFrame is needed
+# for matching quarterly periods.
 COLUMNS_TO_KEEP = [
     "TimeFrame",
     "Location Id",
@@ -89,26 +78,9 @@ COLUMNS_TO_KEEP = [
     "Log Std Dev Weekly Rent",
 ]
 
-COLUMNS_TO_DROP = []
 
-
-# ---------------------------------------------------------------------------
-# Matching timeframe
-# ---------------------------------------------------------------------------
-# PRESENTATION GUIDE:
-# Our Airbnb dataset covers October 2025 to June 2026.
-#
-# Airbnb is monthly, but the Tenancy dataset is quarterly.
-#
-# Therefore, we selected:
-#
-# Q4 2025 = October to December 2025
-# Q1 2026 = January to March 2026
-# Q2 2026 = April to June 2026
-#
-# Together these three quarters cover the same overall timeframe
-# as the Airbnb dataset.
-
+# These are the quarterly periods established in the previous deliverable.
+# They correspond to the tenancy comparison period used in the project.
 TIMEFRAMES_TO_KEEP = [
     pd.Timestamp("2025-10-01"),
     pd.Timestamp("2026-01-01"),
@@ -116,19 +88,30 @@ TIMEFRAMES_TO_KEEP = [
 ]
 
 
+TEXT_COLUMNS = [
+    "Dwelling Type",
+    "Number Of Beds",
+]
+
+
+BOND_COLUMNS = [
+    "Total Bonds",
+    "Active Bonds",
+    "Closed Bonds",
+]
+
+
+RENT_COLUMNS = [
+    "Median Rent",
+    "Geometric Mean Rent",
+    "Upper Quartile Rent",
+    "Lower Quartile Rent",
+]
+
+
 # ---------------------------------------------------------------------------
 # Cleaning log
 # ---------------------------------------------------------------------------
-# PRESENTATION GUIDE:
-# Instead of only producing a cleaned dataset, we also record our
-# cleaning decisions.
-#
-# The log records:
-#   - what we did,
-#   - why we did it,
-#   - and what effect it had.
-#
-# This makes the cleaning process easier to explain and reproduce.
 
 def add_log(
     log_rows: list,
@@ -140,101 +123,120 @@ def add_log(
     """
     Add one cleaning decision to the cleaning log.
 
-    The cleaning log records what was done, why it was done,
-    and what consequence the decision had on the dataset.
+    Args:
+        log_rows:
+            List containing cleaning-log entries.
+        step:
+            Name of the cleaning step.
+        decision:
+            Cleaning action or decision.
+        reason:
+            Reason for the decision.
+        impact:
+            Observed effect on the dataset.
     """
-    log_rows.append(
-        {
-            "step": step,
-            "decision": decision,
-            "reason": reason,
-            "impact": impact,
-        }
-    )
+    log_rows.append({
+        "step": step,
+        "decision": decision,
+        "reason": reason,
+        "impact": impact,
+    })
 
 
 # ---------------------------------------------------------------------------
-# Load data
+# Load input
 # ---------------------------------------------------------------------------
-# PRESENTATION GUIDE:
-# We load the original downloaded Tenancy CSV directly into pandas.
-#
-# We do not manually edit the raw CSV. This means another team member
-# can rerun the script and reproduce the same cleaning process.
 
 def load_data(filepath: Path) -> pd.DataFrame:
     """
-    Load the raw Detailed Quarterly Rental Bond dataset.
+    Load the raw Tenancy Services dataset.
 
-    The original downloaded dataset is read without modifying it.
-    The script stops if the expected file cannot be found.
+    Args:
+        filepath:
+            Path to the raw Tenancy CSV.
+
+    Returns:
+        Loaded Tenancy DataFrame.
+
+    Raises:
+        FileNotFoundError:
+            If the expected source file does not exist.
+        ValueError:
+            If the source dataset contains no rows.
     """
     if not filepath.exists():
         raise FileNotFoundError(
-            f"Could not find {filepath}. "
-            "Check that the Tenancy dataset is inside tenancy_data."
+            f"Tenancy source file not found: {filepath}"
         )
 
-    return pd.read_csv(
+    df = pd.read_csv(
         filepath,
         low_memory=False,
     )
 
+    if df.empty:
+        raise ValueError(
+            f"Tenancy source dataset is empty: {filepath}"
+        )
+
+    return df
+
 
 # ---------------------------------------------------------------------------
-# Check expected columns
+# Validate input structure
 # ---------------------------------------------------------------------------
-# PRESENTATION GUIDE:
-# Before cleaning, we check that the dataset still contains the
-# 12 columns that our pipeline expects.
-#
-# This is a safety check. If the source dataset changes in the future,
-# the script will stop instead of silently cleaning the wrong structure.
 
 def check_expected_columns(df: pd.DataFrame) -> None:
     """
-    Check that all expected Tenancy dataset columns are present.
+    Check that all columns required by the cleaning process are present.
 
-    This prevents the pipeline from continuing if the source dataset
-    has an unexpected structure.
+    This is a fail-fast check for automation. If the source-data structure
+    changes, the pipeline stops instead of silently producing an incomplete
+    output.
+
+    Args:
+        df:
+            Raw Tenancy DataFrame.
+
+    Raises:
+        ValueError:
+            If one or more required columns are missing.
     """
     missing_columns = [
-        col
-        for col in COLUMNS_TO_KEEP
-        if col not in df.columns
+        column
+        for column in COLUMNS_TO_KEEP
+        if column not in df.columns
     ]
 
     if missing_columns:
         raise ValueError(
-            "The following expected columns are missing: "
+            "Required Tenancy column(s) missing: "
             f"{missing_columns}"
         )
 
 
 # ---------------------------------------------------------------------------
-# Select columns
+# Select project columns
 # ---------------------------------------------------------------------------
-# PRESENTATION GUIDE:
-# All 12 columns are retained.
-#
-# We do not remove a column simply because it contains some missing
-# values. A column is removed only when there is a justified reason.
-#
-# In this dataset, every column still contains potentially useful
-# information about location, property type, bonds, or rent.
 
 def select_columns(
     df: pd.DataFrame,
     log_rows: list,
 ) -> pd.DataFrame:
     """
-    Retain all 12 original columns.
+    Retain the 12 Tenancy columns required by the project.
 
-    No columns are removed because each column contains information
-    that may be useful for the rental analysis.
+    No required columns are removed. Location Id and TimeFrame are retained
+    because later analysis uses them to match geographic areas and periods.
 
-    Location Id and TimeFrame are specifically retained because
-    Deliverable 4 requires them for later analysis.
+    Args:
+        df:
+            Raw Tenancy DataFrame.
+        log_rows:
+            Cleaning-log entries.
+
+    Returns:
+        DataFrame containing the required columns.
     """
     cleaned = df[
         COLUMNS_TO_KEEP
@@ -243,105 +245,133 @@ def select_columns(
     add_log(
         log_rows,
         step="Select columns",
-        decision="Retained all 12 original columns",
+        decision="Retained all 12 required Tenancy columns",
         reason=(
-            "All columns contain potentially useful rental bond "
-            "information. Location Id and TimeFrame are also "
-            "specifically required for later analysis."
+            "All selected columns contain useful rental information. "
+            "Location Id and TimeFrame are required for later analysis."
         ),
-        impact="0 columns removed",
+        impact=(
+            f"{len(df.columns)} input columns -> "
+            f"{len(cleaned.columns)} retained columns"
+        ),
     )
 
     return cleaned
 
 
 # ---------------------------------------------------------------------------
-# Filter timeframe
+# TimeFrame cleaning and filtering
 # ---------------------------------------------------------------------------
-# PRESENTATION GUIDE:
-# This is an important part of the cleaning process.
-#
-# The original Tenancy CSV stores TimeFrame as DD/MM/YYYY.
-#
-# For example:
-#   1/10/2025 = 1 October 2025
-#   1/01/2026 = 1 January 2026
-#   1/04/2026 = 1 April 2026
-#
-# We explicitly tell pandas that the format is day/month/year.
-# This prevents the day and month from being interpreted incorrectly.
-#
-# After converting the dates, we retain only the three quarters
-# covering October 2025 through June 2026.
-#
-# This reduces the dataset from 226,080 rows to 27,212 rows.
 
-def filter_timeframe(
+def clean_and_filter_timeframe(
     df: pd.DataFrame,
     log_rows: list,
 ) -> pd.DataFrame:
     """
-    Convert TimeFrame to a proper date and filter the dataset to the
-    quarters covering October 2025 through June 2026.
+    Convert TimeFrame to datetime and retain the project comparison quarters.
 
-    The raw Tenancy CSV stores TimeFrame using DD/MM/YYYY.
+    The raw TimeFrame values use DD/MM/YYYY. The format is specified
+    explicitly to avoid ambiguity between day and month.
 
-    Examples:
-      1/10/2025 = 1 October 2025
-      1/01/2026 = 1 January 2026
-      1/04/2026 = 1 April 2026
+    Args:
+        df:
+            Tenancy DataFrame.
+        log_rows:
+            Cleaning-log entries.
 
-    The format is explicitly specified as %d/%m/%Y so that pandas
-    does not incorrectly interpret the day and month.
+    Returns:
+        Tenancy data restricted to the required quarters.
+
+    Raises:
+        ValueError:
+            If dates cannot be parsed, an expected quarter is missing, or
+            filtering leaves no rows.
     """
     cleaned = df.copy()
 
-    rows_before = len(cleaned)
+    rows_before = len(
+        cleaned
+    )
 
-    # PRESENTATION:
-    # Convert the original text dates into proper datetime values.
-    #
-    # %d = day
-    # %m = month
-    # %Y = four-digit year
+    # Keep the original values temporarily so invalid dates can be detected.
+    original_timeframe = cleaned[
+        "TimeFrame"
+    ].copy()
+
     cleaned["TimeFrame"] = pd.to_datetime(
         cleaned["TimeFrame"],
         format="%d/%m/%Y",
         errors="coerce",
     )
 
-    # Check whether any dates failed to convert.
-    invalid_dates = (
-        cleaned["TimeFrame"]
-        .isna()
-        .sum()
+    invalid_dates = int(
+        (
+            original_timeframe.notna()
+            & cleaned["TimeFrame"].isna()
+        ).sum()
     )
 
-    # PRESENTATION:
-    # Keep only Q4 2025, Q1 2026, and Q2 2026.
-    # These three quarters match the overall Airbnb timeframe.
+    if invalid_dates > 0:
+        raise ValueError(
+            f"{invalid_dates} TimeFrame value(s) could not be parsed."
+        )
+
+    # Check that every expected project quarter exists in the source data
+    # before filtering.
+    available_timeframes = set(
+        cleaned["TimeFrame"]
+        .dropna()
+        .tolist()
+    )
+
+    missing_timeframes = [
+        timeframe
+        for timeframe in TIMEFRAMES_TO_KEEP
+        if timeframe not in available_timeframes
+    ]
+
+    if missing_timeframes:
+        missing_labels = [
+            timeframe.strftime("%Y-%m-%d")
+            for timeframe in missing_timeframes
+        ]
+
+        raise ValueError(
+            "Expected Tenancy quarter(s) missing from source data: "
+            + ", ".join(missing_labels)
+        )
+
     cleaned = cleaned[
         cleaned["TimeFrame"].isin(
             TIMEFRAMES_TO_KEEP
         )
     ].copy()
 
-    rows_after = len(cleaned)
+    if cleaned.empty:
+        raise ValueError(
+            "No Tenancy rows remain after timeframe filtering."
+        )
+
+    rows_after = len(
+        cleaned
+    )
 
     add_log(
         log_rows,
         step="Filter timeframe",
         decision=(
-            "Retained the three quarters covering "
-            "October 2025 through June 2026"
+            "Retained the project Tenancy quarters: "
+            + ", ".join(
+                timeframe.strftime("%Y-%m-%d")
+                for timeframe in TIMEFRAMES_TO_KEEP
+            )
         ),
         reason=(
-            "This matches the overall timeframe of the "
-            "Christchurch Airbnb dataset."
+            "These are the quarterly Tenancy periods established "
+            "for the project's rental comparison."
         ),
         impact=(
-            f"{rows_before} rows -> {rows_after} rows; "
-            f"{invalid_dates} invalid TimeFrame value(s)"
+            f"{rows_before} rows -> {rows_after} rows"
         ),
     )
 
@@ -351,14 +381,6 @@ def filter_timeframe(
 # ---------------------------------------------------------------------------
 # Standardise text fields
 # ---------------------------------------------------------------------------
-# PRESENTATION GUIDE:
-# We remove unnecessary spaces from categorical text fields.
-#
-# This helps make categories consistent. For example, "House" and
-# "House " should not accidentally be treated as two different values.
-#
-# Number Of Beds stays as text because it contains categories such
-# as ALL and 5+, not just ordinary numbers.
 
 def standardise_text(
     df: pd.DataFrame,
@@ -367,36 +389,36 @@ def standardise_text(
     """
     Standardise selected categorical text fields.
 
-    Leading and trailing spaces are removed from Dwelling Type
-    and Number Of Beds.
+    Leading and trailing whitespace is removed. Number Of Beds remains a
+    text field because it can contain categories rather than only numbers.
 
-    Number Of Beds remains a text field because categories such as
-    ALL and 5+ should not be forced into numeric values.
+    Args:
+        df:
+            Filtered Tenancy DataFrame.
+        log_rows:
+            Cleaning-log entries.
+
+    Returns:
+        DataFrame with standardised text values.
     """
     cleaned = df.copy()
 
-    text_columns = [
-        "Dwelling Type",
-        "Number Of Beds",
-    ]
-
-    for col in text_columns:
-        cleaned[col] = (
-            cleaned[col]
+    for column in TEXT_COLUMNS:
+        cleaned[column] = (
+            cleaned[column]
             .astype("string")
             .str.strip()
         )
 
     add_log(
         log_rows,
-        step="Standardise text fields",
+        step="Standardise text",
         decision=(
-            "Removed leading and trailing spaces from "
-            "Dwelling Type and Number Of Beds"
+            "Trimmed Dwelling Type and Number Of Beds"
         ),
         reason=(
-            "Consistent categorical values reduce formatting "
-            "inconsistencies without changing their meaning."
+            "Removing unnecessary surrounding whitespace makes "
+            "categorical values more consistent."
         ),
         impact="0 rows removed",
     )
@@ -405,33 +427,32 @@ def standardise_text(
 
 
 # ---------------------------------------------------------------------------
-# Check duplicates
+# Duplicate handling
 # ---------------------------------------------------------------------------
-# PRESENTATION GUIDE:
-# We check for completely identical rows.
-#
-# We do NOT treat repeated Location Id values as duplicates because
-# the same location can legitimately have several records for
-# different dwelling types or bedroom categories.
-#
-# Therefore, only exact duplicate rows are removed.
 
-def check_duplicates(
+def remove_exact_duplicates(
     df: pd.DataFrame,
     log_rows: list,
 ) -> pd.DataFrame:
     """
-    Check for completely identical duplicate records.
+    Remove completely identical duplicate rows.
 
-    Only exact duplicate rows are removed.
+    Repeated Location Id values are not treated as duplicates because a
+    location can legitimately have multiple dwelling types, bedroom
+    categories, and quarterly records.
 
-    Repeated Location Id or TimeFrame values are not automatically
-    duplicates because one location and quarter can contain several
-    dwelling types and bedroom categories.
+    Args:
+        df:
+            Tenancy DataFrame.
+        log_rows:
+            Cleaning-log entries.
+
+    Returns:
+        DataFrame with exact duplicates removed.
     """
     cleaned = df.copy()
 
-    duplicate_count = (
+    duplicate_count = int(
         cleaned
         .duplicated()
         .sum()
@@ -447,52 +468,39 @@ def check_duplicates(
     add_log(
         log_rows,
         step="Check exact duplicates",
-        decision="Removed exact duplicate rows if present",
+        decision="Removed completely identical rows",
         reason=(
-            "Completely identical rows provide no additional "
-            "information, while repeated locations can legitimately "
-            "occur for different property categories."
+            "Exact duplicate rows add no new information, while "
+            "repeated locations may legitimately represent different "
+            "rental categories."
         ),
-        impact=f"{duplicate_count} row(s) removed",
+        impact=(
+            f"{duplicate_count} row(s) removed"
+        ),
     )
 
     return cleaned
 
 
 # ---------------------------------------------------------------------------
-# Check missing values
+# Missing-value documentation
 # ---------------------------------------------------------------------------
-# PRESENTATION GUIDE:
-# We identify and document missing values instead of automatically
-# deleting every incomplete row.
-#
-# A record can still contain useful information even when one field
-# is missing.
-#
-# Some published Tenancy values may also be unavailable or suppressed.
-#
-# Our final dataset still contains:
-#   Number Of Beds             = 890 missing
-#   Location Id                = 94 missing
-#   Median Rent                = 94 missing
-#   Geometric Mean Rent        = 94 missing
-#   Upper Quartile Rent        = 94 missing
-#   Lower Quartile Rent        = 94 missing
-#   Log Std Dev Weekly Rent    = 94 missing
 
-def check_missing_values(
+def document_missing_values(
     df: pd.DataFrame,
     log_rows: list,
 ) -> None:
     """
-    Check and document missing values without automatically deleting them.
+    Document missing values without automatically deleting or imputing them.
 
-    Missing values are retained because incomplete records may still
-    contain useful information. Some published values may also be
-    unavailable because of privacy suppression.
+    Missing values are retained because incomplete Tenancy records can still
+    contain useful information and some published values may be unavailable.
 
-    Automatically deleting all incomplete rows could cause unnecessary
-    data loss.
+    Args:
+        df:
+            Tenancy DataFrame.
+        log_rows:
+            Cleaning-log entries.
     """
     missing = (
         df
@@ -514,8 +522,8 @@ def check_missing_values(
 
     else:
         impact = "; ".join(
-            f"{col}: {count}"
-            for col, count in missing.items()
+            f"{column}: {int(count)}"
+            for column, count in missing.items()
         )
 
     add_log(
@@ -523,247 +531,305 @@ def check_missing_values(
         step="Check missing values",
         decision="Retained legitimate missing values",
         reason=(
-            "Missing values were not automatically removed because "
-            "some may represent valid records with unavailable or "
-            "suppressed information."
+            "Automatically deleting or imputing all missing values "
+            "could remove useful records or introduce unsupported data."
         ),
         impact=impact,
     )
 
 
 # ---------------------------------------------------------------------------
-# Validate numeric fields
+# Numeric validation
 # ---------------------------------------------------------------------------
-# PRESENTATION GUIDE:
-# We check important numeric variables using simple logical rules.
-#
-# Bond counts should never be negative.
-#
-# Available weekly rent values should be greater than zero.
-#
-# We check these values instead of automatically changing unusual
-# observations because unusual does not always mean incorrect.
 
 def validate_numeric_fields(
     df: pd.DataFrame,
     log_rows: list,
 ) -> None:
     """
-    Validate important numeric variables.
+    Validate important numeric fields.
 
-    Bond counts are checked for negative values.
+    Checks:
+        - bond counts must not be negative;
+        - available weekly rent values must be greater than zero.
 
-    Rent measures are checked for zero or negative values when present.
+    Missing values are not treated as invalid because the project has
+    intentionally retained legitimate missing values.
 
-    Unusual values are checked rather than automatically removed because
-    they should first be investigated in their data context.
+    Args:
+        df:
+            Tenancy DataFrame.
+        log_rows:
+            Cleaning-log entries.
+
+    Raises:
+        ValueError:
+            If impossible numeric values are detected.
     """
-    bond_columns = [
-        "Total Bonds",
-        "Active Bonds",
-        "Closed Bonds",
-    ]
-
-    rent_columns = [
-        "Median Rent",
-        "Geometric Mean Rent",
-        "Upper Quartile Rent",
-        "Lower Quartile Rent",
-    ]
-
     invalid_bonds = {}
 
-    for col in bond_columns:
-        invalid_bonds[col] = (
-            df[col].notna()
-            &
-            (df[col] < 0)
-        ).sum()
+    for column in BOND_COLUMNS:
+        invalid_bonds[column] = int(
+            (
+                df[column].notna()
+                & (df[column] < 0)
+            ).sum()
+        )
 
     invalid_rents = {}
 
-    for col in rent_columns:
-        invalid_rents[col] = (
-            df[col].notna()
-            &
-            (df[col] <= 0)
-        ).sum()
+    for column in RENT_COLUMNS:
+        invalid_rents[column] = int(
+            (
+                df[column].notna()
+                & (df[column] <= 0)
+            ).sum()
+        )
 
-    bond_impact = ", ".join(
-        f"{col}={count}"
-        for col, count in invalid_bonds.items()
-    )
+    validation_errors = []
 
-    rent_impact = ", ".join(
-        f"{col}={count}"
-        for col, count in invalid_rents.items()
-    )
+    for column, count in invalid_bonds.items():
+        if count > 0:
+            validation_errors.append(
+                f"{column}: {count} negative value(s)"
+            )
+
+    for column, count in invalid_rents.items():
+        if count > 0:
+            validation_errors.append(
+                f"{column}: {count} non-positive value(s)"
+            )
 
     add_log(
         log_rows,
         step="Validate numeric fields",
         decision=(
-            "Checked bond counts and weekly rent measures "
-            "for impossible values"
+            "Checked bond counts for negative values and "
+            "rent fields for non-positive values"
         ),
         reason=(
-            "Bond counts should not be negative and observed "
-            "weekly rent values should be greater than zero."
+            "These checks identify logically invalid values before "
+            "the data are used in later analysis."
         ),
         impact=(
-            f"Invalid bond counts: {bond_impact}; "
-            f"invalid rent values: {rent_impact}"
+            f"{sum(invalid_bonds.values())} invalid bond value(s); "
+            f"{sum(invalid_rents.values())} invalid rent value(s)"
         ),
     )
 
+    if validation_errors:
+        raise ValueError(
+            "Tenancy numeric validation failed: "
+            + "; ".join(validation_errors)
+        )
+
 
 # ---------------------------------------------------------------------------
-# Check rent ordering
+# Rent-order sanity check
 # ---------------------------------------------------------------------------
-# PRESENTATION GUIDE:
-# This is a logical sanity check.
-#
-# When all three rent statistics are available, they should follow:
-#
-# Lower Quartile Rent <= Median Rent <= Upper Quartile Rent
-#
-# If this ordering is violated, the record should be investigated
-# because the statistics would not make logical sense.
 
 def check_rent_ordering(
     df: pd.DataFrame,
     log_rows: list,
 ) -> None:
     """
-    Check the logical ordering of lower quartile, median,
-    and upper quartile rent.
+    Check the logical ordering of the rent statistics.
 
-    When all three values are available, the expected order is:
+    For records where all three values are available, the expected order is:
 
         Lower Quartile Rent <= Median Rent <= Upper Quartile Rent
 
-    Inconsistent records are identified for investigation rather than
-    automatically deleted.
+    Args:
+        df:
+            Tenancy DataFrame.
+        log_rows:
+            Cleaning-log entries.
+
+    Raises:
+        ValueError:
+            If one or more complete records violate the expected ordering.
     """
-    complete_rent_rows = df[
-        [
-            "Lower Quartile Rent",
-            "Median Rent",
-            "Upper Quartile Rent",
+    complete_rows = (
+        df[
+            [
+                "Lower Quartile Rent",
+                "Median Rent",
+                "Upper Quartile Rent",
+            ]
         ]
-    ].notna().all(axis=1)
+        .notna()
+        .all(axis=1)
+    )
 
     invalid_order = (
-        complete_rent_rows
-        &
-        (
+        complete_rows
+        & (
             (
                 df["Lower Quartile Rent"]
-                >
-                df["Median Rent"]
+                > df["Median Rent"]
             )
             |
             (
                 df["Median Rent"]
-                >
-                df["Upper Quartile Rent"]
+                > df["Upper Quartile Rent"]
             )
         )
     )
 
-    invalid_count = (
-        invalid_order
-        .sum()
+    invalid_count = int(
+        invalid_order.sum()
     )
 
     add_log(
         log_rows,
         step="Check rent ordering",
         decision=(
-            "Checked Lower Quartile <= Median <= Upper Quartile"
+            "Checked Lower Quartile Rent <= Median Rent "
+            "<= Upper Quartile Rent"
         ),
         reason=(
-            "The quartile and median values should follow a "
-            "logical ordering when all three values are available."
+            "The quartile and median values should follow their "
+            "expected statistical ordering."
         ),
         impact=(
-            f"{invalid_count} record(s) require investigation"
+            f"{invalid_count} invalid record(s) found"
         ),
     )
+
+    if invalid_count > 0:
+        raise ValueError(
+            f"{invalid_count} Tenancy record(s) violate "
+            "Lower Quartile Rent <= Median Rent <= Upper Quartile Rent."
+        )
 
 
 # ---------------------------------------------------------------------------
 # Final sanity checks
 # ---------------------------------------------------------------------------
-# PRESENTATION GUIDE:
-# Before saving the dataset, we perform final quality-control checks.
-#
-# We confirm:
-#   - Location Id still exists.
-#   - TimeFrame still exists.
-#   - only the intended three quarters remain.
-#   - all 12 intended columns remain.
-#   - no exact duplicates remain.
-#
-# This prevents us from saving a dataset that does not match our
-# intended cleaning rules.
 
 def run_sanity_checks(
     df: pd.DataFrame,
     log_rows: list,
 ) -> None:
     """
-    Run final checks on the cleaned Tenancy dataset.
+    Run final quality-control checks before saving the cleaned dataset.
 
-    These checks confirm that:
-      - Location Id is retained.
-      - TimeFrame is retained.
-      - only the three required quarterly periods remain.
-      - all 12 intended columns remain.
-      - no exact duplicate rows remain.
+    Checks confirm that:
+        - the dataset is not empty;
+        - all 12 required columns remain;
+        - only the expected project quarters remain;
+        - every expected project quarter is represented;
+        - no exact duplicate rows remain.
+
+    These checks are useful when the script is run automatically because
+    invalid output stops the pipeline before later analysis is performed.
+
+    Args:
+        df:
+            Final cleaned Tenancy DataFrame.
+        log_rows:
+            Cleaning-log entries.
+
+    Raises:
+        ValueError:
+            If a final sanity check fails.
     """
-    assert "Location Id" in df.columns
-    assert "TimeFrame" in df.columns
+    if df.empty:
+        raise ValueError(
+            "Cleaned Tenancy dataset is empty."
+        )
+
+    missing_columns = [
+        column
+        for column in COLUMNS_TO_KEEP
+        if column not in df.columns
+    ]
+
+    if missing_columns:
+        raise ValueError(
+            "Required cleaned Tenancy column(s) missing: "
+            f"{missing_columns}"
+        )
+
+    if len(df.columns) != len(COLUMNS_TO_KEEP):
+        raise ValueError(
+            "Unexpected number of columns in cleaned Tenancy dataset. "
+            f"Expected {len(COLUMNS_TO_KEEP)}, found {len(df.columns)}."
+        )
 
     unexpected_timeframes = (
         ~df["TimeFrame"].isin(
             TIMEFRAMES_TO_KEEP
         )
-    ).sum()
+    )
 
-    remaining_duplicates = (
+    if unexpected_timeframes.any():
+        unexpected_values = (
+            df.loc[
+                unexpected_timeframes,
+                "TimeFrame",
+            ]
+            .drop_duplicates()
+            .sort_values()
+            .dt.strftime("%Y-%m-%d")
+            .tolist()
+        )
+
+        raise ValueError(
+            "Unexpected TimeFrame value(s) remain after filtering: "
+            f"{unexpected_values}"
+        )
+
+    actual_timeframes = set(
+        df["TimeFrame"]
+        .dropna()
+        .tolist()
+    )
+
+    missing_timeframes = [
+        timeframe
+        for timeframe in TIMEFRAMES_TO_KEEP
+        if timeframe not in actual_timeframes
+    ]
+
+    if missing_timeframes:
+        missing_labels = [
+            timeframe.strftime("%Y-%m-%d")
+            for timeframe in missing_timeframes
+        ]
+
+        raise ValueError(
+            "Expected TimeFrame value(s) missing after cleaning: "
+            + ", ".join(missing_labels)
+        )
+
+    remaining_duplicates = int(
         df
         .duplicated()
         .sum()
     )
 
-    assert unexpected_timeframes == 0, (
-        "Unexpected TimeFrame values remain after filtering."
-    )
-
-    assert len(df.columns) == len(COLUMNS_TO_KEEP), (
-        "Unexpected number of columns in cleaned dataset."
-    )
-
-    assert remaining_duplicates == 0, (
-        "Exact duplicate rows remain after cleaning."
-    )
+    if remaining_duplicates > 0:
+        raise ValueError(
+            f"{remaining_duplicates} exact duplicate row(s) "
+            "remain after cleaning."
+        )
 
     add_log(
         log_rows,
         step="Final sanity checks",
         decision=(
-            "Confirmed required columns, timeframe, "
-            "column count, and duplicates"
+            "Validated final columns, timeframe values, "
+            "required quarters, and duplicates"
         ),
         reason=(
-            "Final checks confirm that the cleaned dataset "
-            "matches the intended structure."
+            "The automated pipeline should stop before saving "
+            "invalid data for later analysis."
         ),
         impact=(
             f"{len(df)} final rows; "
             f"{len(df.columns)} final columns; "
-            f"{remaining_duplicates} exact duplicate(s) remain"
+            "all final sanity checks passed"
         ),
     )
 
@@ -771,19 +837,6 @@ def run_sanity_checks(
 # ---------------------------------------------------------------------------
 # Save outputs
 # ---------------------------------------------------------------------------
-# PRESENTATION GUIDE:
-# We save two outputs:
-#
-# 1. tenancy_cleaned.csv
-#    This is the final cleaned dataset.
-#
-# 2. tenancy_cleaning_log.csv
-#    This documents our cleaning decisions.
-#
-# We do not overwrite the original downloaded dataset.
-#
-# TimeFrame is saved in standard YYYY-MM-DD format to make it easier
-# to work with in later analysis.
 
 def save_outputs(
     df: pd.DataFrame,
@@ -792,12 +845,20 @@ def save_outputs(
     """
     Save the cleaned Tenancy dataset and cleaning log.
 
-    The raw downloaded dataset is not overwritten.
+    The raw source dataset is never overwritten. TimeFrame is written using
+    YYYY-MM-DD so that later analysis receives a consistent date format.
 
-    TimeFrame is saved in standard YYYY-MM-DD format so that it can
-    be used consistently in later analysis.
+    Args:
+        df:
+            Final cleaned Tenancy DataFrame.
+        log_rows:
+            Cleaning-log entries.
+
+    Raises:
+        RuntimeError:
+            If an expected output file is not created.
     """
-    OUTPUT_FILE.parent.mkdir(
+    DATA_DIR.mkdir(
         parents=True,
         exist_ok=True,
     )
@@ -823,102 +884,73 @@ def save_outputs(
         index=False,
     )
 
+    if not OUTPUT_FILE.exists():
+        raise RuntimeError(
+            f"Cleaned Tenancy output was not created: "
+            f"{OUTPUT_FILE}"
+        )
+
+    if not CLEANING_LOG_FILE.exists():
+        raise RuntimeError(
+            f"Tenancy cleaning log was not created: "
+            f"{CLEANING_LOG_FILE}"
+        )
+
 
 # ---------------------------------------------------------------------------
-# Main pipeline
+# Main cleaning stage
 # ---------------------------------------------------------------------------
-# PRESENTATION GUIDE:
-# This section gives us the easiest way to explain the entire pipeline.
-#
-# The workflow is:
-#
-# Load
-#   ↓
-# Check columns
-#   ↓
-# Keep useful columns
-#   ↓
-# Convert + filter timeframe
-#   ↓
-# Standardise text
-#   ↓
-# Check duplicates
-#   ↓
-# Check missing values
-#   ↓
-# Validate numeric fields
-#   ↓
-# Check rent ordering
-#   ↓
-# Final sanity checks
-#   ↓
-# Save cleaned dataset + cleaning log
 
-def main():
+def main() -> None:
     """
-    Run the complete Deliverable 4 Tenancy Services cleaning pipeline.
+    Run the complete Tenancy cleaning stage.
+
+    Each function performs one clearly defined task. Validation errors are
+    allowed to stop execution so that an orchestration script can detect a
+    failed stage instead of continuing with invalid data.
     """
     log_rows = []
-
-    # -----------------------------------------------------------------------
-    # Step 1: Load raw dataset
-    # -----------------------------------------------------------------------
-    # PRESENTATION:
-    # "We start with the original Tenancy Services dataset, which contains
-    # 226,080 rows and 12 columns."
 
     df = load_data(
         DATA_FILE
     )
 
-    original_rows = len(df)
-    original_columns = len(df.columns)
+    original_rows = len(
+        df
+    )
+
+    original_columns = len(
+        df.columns
+    )
 
     print(
-        f"Loaded dataset: "
+        f"Loaded Tenancy dataset: "
         f"{original_rows} rows, "
         f"{original_columns} columns"
     )
 
-    # -----------------------------------------------------------------------
-    # Step 2: Check structure
-    # -----------------------------------------------------------------------
-    # PRESENTATION:
-    # "Before cleaning, we check that all 12 expected columns are present."
-
+    # Fail early if the source structure has changed.
     check_expected_columns(
         df
     )
 
-    # -----------------------------------------------------------------------
-    # Step 3: Select columns
-    # -----------------------------------------------------------------------
-    # PRESENTATION:
-    # "We reviewed all 12 columns and retained all of them because none
-    # were completely empty or clearly redundant."
+    print(
+        "Input column sanity check passed."
+    )
 
+    # Keep the project columns.
     cleaned = select_columns(
         df,
         log_rows,
     )
 
     print(
-        f"Columns kept: {len(COLUMNS_TO_KEEP)}"
+        f"Columns retained: "
+        f"{len(cleaned.columns)}"
     )
 
-    print(
-        f"Columns dropped: {COLUMNS_TO_DROP}"
-    )
-
-    # -----------------------------------------------------------------------
-    # Step 4: Convert and filter TimeFrame
-    # -----------------------------------------------------------------------
-    # PRESENTATION:
-    # "The source stores dates as day/month/year, so we explicitly convert
-    # them before filtering. We then retain the three quarters covering
-    # October 2025 through June 2026."
-
-    cleaned = filter_timeframe(
+    # Parse TimeFrame and keep the project's established quarters.
+    cleaned = clean_and_filter_timeframe(
         cleaned,
         log_rows,
     )
@@ -928,7 +960,9 @@ def main():
         f"{len(cleaned)}"
     )
 
-    print("TimeFrames retained:")
+    print(
+        "\nTimeFrames retained:"
+    )
 
     print(
         cleaned["TimeFrame"]
@@ -936,95 +970,50 @@ def main():
         .sort_index()
     )
 
-    # -----------------------------------------------------------------------
-    # Step 5: Standardise text
-    # -----------------------------------------------------------------------
-    # PRESENTATION:
-    # "We remove unnecessary spaces from categorical fields so values
-    # are represented consistently."
-
+    # Apply the remaining cleaning and validation steps.
     cleaned = standardise_text(
         cleaned,
         log_rows,
     )
 
-    # -----------------------------------------------------------------------
-    # Step 6: Check duplicates
-    # -----------------------------------------------------------------------
-    # PRESENTATION:
-    # "We check for exact duplicate rows. Repeated locations are allowed
-    # because one location can contain different property categories."
-
-    cleaned = check_duplicates(
+    cleaned = remove_exact_duplicates(
         cleaned,
         log_rows,
     )
 
-    # -----------------------------------------------------------------------
-    # Step 7: Check missing values
-    # -----------------------------------------------------------------------
-    # PRESENTATION:
-    # "We document missing values rather than automatically deleting
-    # incomplete observations, because they can still contain useful data."
-
-    check_missing_values(
+    document_missing_values(
         cleaned,
         log_rows,
     )
-
-    # -----------------------------------------------------------------------
-    # Step 8: Validate numeric fields
-    # -----------------------------------------------------------------------
-    # PRESENTATION:
-    # "We check that bond counts are not negative and available rent
-    # values are greater than zero."
 
     validate_numeric_fields(
         cleaned,
         log_rows,
     )
 
-    # -----------------------------------------------------------------------
-    # Step 9: Check rent ordering
-    # -----------------------------------------------------------------------
-    # PRESENTATION:
-    # "We check that lower quartile rent is less than or equal to the
-    # median, and the median is less than or equal to the upper quartile."
-
     check_rent_ordering(
         cleaned,
         log_rows,
     )
-
-    # -----------------------------------------------------------------------
-    # Step 10: Final sanity checks
-    # -----------------------------------------------------------------------
-    # PRESENTATION:
-    # "Before saving, we confirm the required columns, correct timeframe,
-    # expected column count, and absence of exact duplicates."
 
     run_sanity_checks(
         cleaned,
         log_rows,
     )
 
-    # -----------------------------------------------------------------------
-    # Step 11: Save outputs
-    # -----------------------------------------------------------------------
-    # PRESENTATION:
-    # "Finally, we save the cleaned dataset separately from the raw file
-    # and create a cleaning log documenting our decisions."
+    print(
+        "\nFinal sanity checks passed."
+    )
 
+    # Save only after every validation step has succeeded.
     save_outputs(
         cleaned,
         log_rows,
     )
 
-    # -----------------------------------------------------------------------
-    # Final results
-    # -----------------------------------------------------------------------
-
-    print("\nCleaning complete.")
+    print(
+        "\nCleaning complete."
+    )
 
     print(
         f"Original dataset: "
@@ -1048,7 +1037,9 @@ def main():
         f"{CLEANING_LOG_FILE}"
     )
 
-    print("\nMissing values remaining:")
+    print(
+        "\nMissing values remaining:"
+    )
 
     missing = (
         cleaned
@@ -1056,15 +1047,27 @@ def main():
         .sum()
     )
 
-    print(
+    missing = (
         missing[
             missing > 0
-        ].sort_values(
+        ]
+        .sort_values(
             ascending=False
         )
     )
 
-    print("\nMedian Rent summary:")
+    if missing.empty:
+        print(
+            "None"
+        )
+    else:
+        print(
+            missing
+        )
+
+    print(
+        "\nMedian Rent summary:"
+    )
 
     print(
         cleaned["Median Rent"]
